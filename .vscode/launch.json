@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch CCP (Debug)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-ccp",
+            "program": "${workspaceFolder}/ccp/bin/Debug/net8.0/ccp.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/ccp",
+            "console": "internalConsole",
+            "stopAtEntry": false,
+            "env": {
+                "ASPNETCORE_ENVIRONMENT": "Development",
+                "ASPNETCORE_URLS": "http://localhost:5000"
+            }
+        }
+    ]
+}
