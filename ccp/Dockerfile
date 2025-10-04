@@ -1,25 +1,31 @@
 # Use the official .NET 8 SDK image for building
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
-WORKDIR /app
+WORKDIR /src
 
-# Copy the project file and restore dependencies
-COPY *.csproj ./
-RUN dotnet restore
+# Copy solution file
+COPY ccp-poc.sln ./
+COPY ccp/ccp.csproj ./ccp/
+COPY shared/shared.csproj ./shared/
+COPY worker/worker.csproj ./worker/
 
-# Copy the rest of the application code
+# Restore dependencies - restore solution first, then specific project
+RUN dotnet restore "ccp-poc.sln"
+
+# Copy the rest of the source code
 COPY . ./
 
 # Build the application
-RUN dotnet publish -c Development -o out
+WORKDIR /src/ccp
+RUN dotnet publish -c Development -o /app/publish
 
 # Use the official .NET 8 ASP.NET Core runtime image
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 
 # Copy the published application from the build stage
-COPY --from=build /app/out .
+COPY --from=build /app/publish .
 
-# Expose port 80
+# Expose port 8080
 EXPOSE 8080
 
 # Set the entry point

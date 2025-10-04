@@ -1,6 +1,11 @@
-using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
+using RabbitMQ.Client;
 using StackExchange.Redis;
+using ccp.Services;
+using ccp.Models;
+using shared.Models;
+using shared.Messages;
+using shared.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,20 +19,38 @@ builder.Services.AddSingleton(provider =>
     return connection.GetDatabase();
 });
 
-// Add services for automatic model validation
-builder.Services.ConfigureHttpJsonOptions(options =>
-{
-    options.SerializerOptions.PropertyNameCaseInsensitive = true;
-    options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
-    options.SerializerOptions.DictionaryKeyPolicy = JsonNamingPolicy.CamelCase;
-});
+// Configure RabbitMQ connection
+builder.Services.AddSingleton<IConnectionFactory>(provider =>
+    new ConnectionFactory
+    {
+        HostName = builder.Configuration.GetValue<string>("RabbitMQ:HostName") ?? "localhost",
+        UserName = builder.Configuration.GetValue<string>("RabbitMQ:UserName") ?? "guest",
+        Password = builder.Configuration.GetValue<string>("RabbitMQ:Password") ?? "guest",
+        Port = builder.Configuration.GetValue<int?>("RabbitMQ:Port") ?? 5672,
+    });
 
+// Configure JSON serialization
 var jsonSerializerOptions = new JsonSerializerOptions
 {
     PropertyNameCaseInsensitive = true,
     PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     DictionaryKeyPolicy = JsonNamingPolicy.CamelCase
 };
+
+builder.Services.AddSingleton(jsonSerializerOptions);
+builder.Services.AddSingleton<IRabbitMQClient, RabbitMqClient>();
+builder.Services.AddSingleton<IWorkerChannel, WorkerChannel>();
+builder.Services.AddSingleton<IPipelineStateService, PipelineStateService>();
+
+// Register background services
+builder.Services.AddHostedService<PipelineHeartbeatMonitorService>();
+    
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.PropertyNameCaseInsensitive = true;
+    options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+    options.SerializerOptions.DictionaryKeyPolicy = JsonNamingPolicy.CamelCase;
+});
 
 var app = builder.Build();
 
@@ -40,7 +63,7 @@ app.MapGet("/pipeline", async Task<string[]> (IDatabase redis) =>
     return pipelineIds.Select(id => id.ToString()).ToArray();
 });
 
-app.MapGet("/pipeline/{id:guid}", async Task<IResult> (Guid id, IDatabase redis) =>
+app.MapGet("/pipeline/{id:guid}", async Task<IResult> (Guid id, IDatabase redis, JsonSerializerOptions jsonOptions) =>
 {
     // check if pipeline is contains in the set of all pipelines
     var isMember = await redis.SetContainsAsync("pipelines:all", id.ToString());
@@ -49,90 +72,70 @@ app.MapGet("/pipeline/{id:guid}", async Task<IResult> (Guid id, IDatabase redis)
         return Results.NotFound(new { message = "Pipeline not found" });
     }
 
-    var pipelineData = await redis.StringGetAsync($"pipeline:{id}:body");
-    if (!pipelineData.HasValue)
+    var pipelineKey = $"pipeline:{id}";
+    var workitem = await redis.StringGetAsync($"{pipelineKey}:workitem");
+    var heartbeat = await redis.StringGetAsync($"{pipelineKey}:heartbeat");
+    var step = await redis.StringGetAsync($"{pipelineKey}:step");
+    var status = await redis.StringGetAsync($"{pipelineKey}:status");
+    var worker = await redis.StringGetAsync($"{pipelineKey}:worker");
+    var staleAt = await redis.StringGetAsync($"{pipelineKey}:stale_at");
+    var staleReason = await redis.StringGetAsync($"{pipelineKey}:stale_reason");
+
+    return Results.Ok(new
     {
-        return Results.NotFound(new { message = "Pipeline not found" });
-    }
-    
-    // Get pipeline metadata
-    var metadata = await redis.HashGetAllAsync($"pipeline:{id}:metadata");
-    var metadataDict = metadata.ToDictionary(h => h.Name.ToString(), h => h.Value.ToString());
-    
-    return Results.Ok(new 
-    { 
         id,
-        metadata = metadataDict,
-        data = JsonSerializer.Deserialize<CreatePipelineRequest>(pipelineData!, jsonSerializerOptions)
+        workitem = workitem.IsNull ? null : JsonSerializer.Deserialize<WorkitemDto>(workitem!, jsonOptions),
+        heartbeat = heartbeat.IsNull ? null : heartbeat.ToString(),
+        step = step.IsNull ? null : step.ToString(),
+        status = status.IsNull ? "active" : status.ToString(),
+        worker = worker.IsNull ? null : worker.ToString(),
+        staleAt = staleAt.IsNull ? null : staleAt.ToString(),
+        staleReason = staleReason.IsNull ? null : staleReason.ToString()
     });
 });
 
+// app.MapDelete("/pipeline/{id:guid}", async Task<IResult> (Guid id, IDatabase redis) =>
+// {
+//     // check if pipeline is contains in the set of all pipelines
+//     var isMember = await redis.SetContainsAsync("pipelines:all", id.ToString());
+//     if (!isMember)
+//     {
+//         return Results.NoContent();
+//     }
+
+//     // Remove the pipeline from the set of all pipelines
+//     await redis.SetRemoveAsync("pipelines:all", id.ToString());
+//     // Remove the workitem associated with the pipeline
+//     await redis.KeyDeleteAsync($"pipeline:{id}:workitem");
+
+//     return Results.NoContent();
+// });
+
 app.MapPost("/pipeline", async Task<CreatePipelineResponse> (
     CreatePipelineRequest request,
-    IDatabase redis) =>
+    IWorkerChannel pipelineRouter,
+    IPipelineStateService pipelineStateService,
+    IDatabase redis,
+    JsonSerializerOptions jsonOptions) =>
 {
-    // Deserialize and validate the pipeline schema
-    var pipeline = JsonSerializer.Deserialize<PipelineSchema>(request.Schema.Body, jsonSerializerOptions);
-
     // Generate pipeline ID
     var pipelineId = Guid.NewGuid();
+    
+    // Deserialize and validate the pipeline schema
+    var pipeline = JsonSerializer.Deserialize<PipelineSchema>(request.Schema.Body, jsonOptions)!;
 
-    // Store pipeline body in Redis to be able pick it up when needed
-    await redis.StringSetAsync($"pipeline:{pipelineId}:body", request.Schema.Body);
+    // Send message to the first worker in the pipeline
+    await pipelineRouter.SendAsync(new WorkerMessage
+    {
+        PipelineId = pipelineId,
+        Workitem = request.Workitem,
+        Step = pipeline.Step
+    });
 
-    // Store pipeline metadata
-    await redis.HashSetAsync($"pipeline:{pipelineId}:metadata",
-    [
-        new ("id", request.Workitem.Id),
-        new ("name", request.Workitem.Name),
-        new ("createdAt", DateTimeOffset.UtcNow.ToString("O"))
-    ]);
-
-    // add pipeline to a set of all pipelines
-    await redis.SetAddAsync("pipelines:all", pipelineId.ToString());
-
-    // Simulate some processing delay
-    await Task.Delay(TimeSpan.FromMilliseconds(1_00 * Random.Shared.NextDouble()));
+    // Store the current step in the pipeline state
+    await pipelineStateService.PutStepAsync(pipelineId, request.Workitem, pipeline.Step);
 
     return new CreatePipelineResponse(pipelineId);
 });
 
 app.Run();
-
-// Validation filter for automatic validation
-public record CreatePipelineRequest
-{
-    [Required]
-    public required WorkitemDto Workitem { get; set; }
-
-    [Required]
-    public required SchemaDto Schema { get; set; }
-}
-
-public record CreatePipelineResponse(Guid PipelineId);
-
-public record WorkitemDto
-{
-    public required string Id { get; set; } // some unique identifier
-    public required string Name { get; set; }
-    public required Dictionary<string, string> Properties { get; set; }
-}
-
-public record SchemaDto
-{
-    public required string Body { get; set; }
-    public Dictionary<string, string>? Parameters { get; set; }
-}
-
-public class PipelineSchema
-{
-    public required PipelineStep Step { get; set; }
-}
-
-public record PipelineStep
-{
-    public required int Index { get; set; }
-    public required string Name { get; set; }
-    public bool IsFinal => Next == null;
-    public PipelineStep? Next { get; set; }
-}
