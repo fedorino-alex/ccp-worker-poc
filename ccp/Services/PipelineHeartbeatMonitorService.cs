@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ccp.Models;
 using shared.Messages;
+using shared.Services;
 
 namespace ccp.Services;
 
@@ -65,7 +66,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
         try
         {
             // Get all active pipelines
-            var pipelineIds = await _pipelineStateService.GetPipelinesAsync();
+            var pipelineIds = await _pipelineStateService.GetHeartbeatPipelinesAsync();
             if (pipelineIds.Length == 0)
             {
                 _logger.LogDebug("No active pipelines found");
@@ -150,10 +151,21 @@ public class PipelineHeartbeatMonitorService : BackgroundService
 
     private async Task HandleStalePipeline(Guid pipelineId)
     {
-        // restart stale pipeline where it was interrupted
-        var workitem = await _pipelineStateService.GetWorkitemAsync(pipelineId);
-        var currentStep = await _pipelineStateService.GetCurrentStepAsync(pipelineId);
+        // take step info and delete key atomicly, so no else ccp can take it and restart work twice
+        var currentStep = await _pipelineStateService.LockCurrentStepAsync(pipelineId);
+        if (currentStep is null)
+        {
+            _logger.LogWarning("Stale pipeline {PipelineId} will be restarted by else ccp", pipelineId);
+            return;
+        }
 
+        var workitem = await _pipelineStateService.GetWorkitemAsync(pipelineId);
+        workitem!.RestoreAttempt += 1;  // increase attempt count for restores
+
+        // remove stale pipeline from monitoring heartbeat
+        await _pipelineStateService.DeleteStepAsync(pipelineId, currentStep!);
+
+        // re-queue workitem to worker channel
         await _workerChannel.SendAsync(new WorkerMessage
         {
             PipelineId = pipelineId,
@@ -161,7 +173,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
             Step = currentStep!
         });
 
-        _logger.LogInformation("Restarted stale pipeline {PipelineId} at step {Step}", pipelineId, currentStep!.Name);
+        _logger.LogInformation("Restarted stale pipeline {PipelineId} at step {Step} with {RestoreAttempt} attempt", pipelineId, currentStep!.Name, workitem!.RestoreAttempt);
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

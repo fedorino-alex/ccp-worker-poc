@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace shared.Services;
 
-public interface IRabbitMQClient
+public interface IRabbitMQClient : IAsyncDisposable
 {
     IChannel Channel { get; }
 
@@ -12,7 +12,7 @@ public interface IRabbitMQClient
     Task DeclareBindingAsync(string exchangeName, string queueName, string routingKey);
 }
 
-public class RabbitMqClient : IRabbitMQClient, IAsyncDisposable
+public class RabbitMqClient : IRabbitMQClient
 {
     private readonly IConnectionFactory _connectionFactory;
     private IConnection _connection;

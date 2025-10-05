@@ -5,7 +5,7 @@
             "name": "Launch CCP (Debug)",
             "type": "coreclr",
             "request": "launch",
-            "preLaunchTask": "build-ccp",
+            "preLaunchTask": "build-solution",
             "program": "${workspaceFolder}/ccp/bin/Debug/net8.0/ccp.dll",
             "args": [],
             "cwd": "${workspaceFolder}/ccp",
@@ -14,6 +14,21 @@
             "env": {
                 "ASPNETCORE_ENVIRONMENT": "Development",
                 "ASPNETCORE_URLS": "http://localhost:5000"
+            }
+        },
+        {
+            "name": "Launch Worker (Debug)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-solution",
+            "program": "${workspaceFolder}/worker/bin/Debug/net8.0/worker.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/worker",
+            "console": "internalConsole",
+            "stopAtEntry": false,
+            "env": {
+                "ASPNETCORE_ENVIRONMENT": "Development",
+                "ASPNETCORE_URLS": "http://localhost:5001"
             }
         }
     ]

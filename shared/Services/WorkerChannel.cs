@@ -1,9 +1,8 @@
 using RabbitMQ.Client;
 using shared.Messages;
-using shared.Services;
 using System.Text.Json;
 
-namespace ccp.Services;
+namespace shared.Services;
 
 public interface IWorkerChannel
 {

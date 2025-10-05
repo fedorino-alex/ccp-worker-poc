@@ -44,6 +44,7 @@ builder.Services.AddSingleton<IPipelineStateService, PipelineStateService>();
 
 // Register background services
 builder.Services.AddHostedService<PipelineHeartbeatMonitorService>();
+builder.Services.AddHostedService<ControlPlaneMessagesListener>();
     
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
@@ -56,84 +57,54 @@ var app = builder.Build();
 
 app.MapGet("/", () => "Hello World!");
 
-// return all pipelines from redis
-app.MapGet("/pipeline", async Task<string[]> (IDatabase redis) =>
+// return pipeline with active heartbeat
+app.MapGet("/pipeline", async Task<string[]> (IPipelineStateService pipelineStateService) =>
 {
-    var pipelineIds = await redis.SetMembersAsync("pipelines:all");
+    var pipelineIds = await pipelineStateService.GetHeartbeatPipelinesAsync();
     return pipelineIds.Select(id => id.ToString()).ToArray();
 });
 
-app.MapGet("/pipeline/{id:guid}", async Task<IResult> (Guid id, IDatabase redis, JsonSerializerOptions jsonOptions) =>
+// return full details of a specific pipeline
+app.MapGet("/pipeline/{pipelineId:guid}", async Task<IResult> (Guid pipelineId, IPipelineStateService pipelineStateService) =>
 {
     // check if pipeline is contains in the set of all pipelines
-    var isMember = await redis.SetContainsAsync("pipelines:all", id.ToString());
-    if (!isMember)
+    var heartbeat = await pipelineStateService.GetHeartbeatAsync(pipelineId);
+    if (heartbeat is null)
     {
         return Results.NotFound(new { message = "Pipeline not found" });
     }
 
-    var pipelineKey = $"pipeline:{id}";
-    var workitem = await redis.StringGetAsync($"{pipelineKey}:workitem");
-    var heartbeat = await redis.StringGetAsync($"{pipelineKey}:heartbeat");
-    var step = await redis.StringGetAsync($"{pipelineKey}:step");
-    var status = await redis.StringGetAsync($"{pipelineKey}:status");
-    var worker = await redis.StringGetAsync($"{pipelineKey}:worker");
-    var staleAt = await redis.StringGetAsync($"{pipelineKey}:stale_at");
-    var staleReason = await redis.StringGetAsync($"{pipelineKey}:stale_reason");
+    var step = await pipelineStateService.GetCurrentStepAsync(pipelineId);
+    var workitem = await pipelineStateService.GetWorkitemAsync(pipelineId);
 
     return Results.Ok(new
     {
-        id,
-        workitem = workitem.IsNull ? null : JsonSerializer.Deserialize<WorkitemDto>(workitem!, jsonOptions),
-        heartbeat = heartbeat.IsNull ? null : heartbeat.ToString(),
-        step = step.IsNull ? null : step.ToString(),
-        status = status.IsNull ? "active" : status.ToString(),
-        worker = worker.IsNull ? null : worker.ToString(),
-        staleAt = staleAt.IsNull ? null : staleAt.ToString(),
-        staleReason = staleReason.IsNull ? null : staleReason.ToString()
+        pipelineId,
+        workitem,
+        heartbeat,
+        step
     });
 });
 
-// app.MapDelete("/pipeline/{id:guid}", async Task<IResult> (Guid id, IDatabase redis) =>
-// {
-//     // check if pipeline is contains in the set of all pipelines
-//     var isMember = await redis.SetContainsAsync("pipelines:all", id.ToString());
-//     if (!isMember)
-//     {
-//         return Results.NoContent();
-//     }
-
-//     // Remove the pipeline from the set of all pipelines
-//     await redis.SetRemoveAsync("pipelines:all", id.ToString());
-//     // Remove the workitem associated with the pipeline
-//     await redis.KeyDeleteAsync($"pipeline:{id}:workitem");
-
-//     return Results.NoContent();
-// });
-
+// create a new pipeline
 app.MapPost("/pipeline", async Task<CreatePipelineResponse> (
     CreatePipelineRequest request,
-    IWorkerChannel pipelineRouter,
-    IPipelineStateService pipelineStateService,
-    IDatabase redis,
+    IWorkerChannel workerChannel,
     JsonSerializerOptions jsonOptions) =>
 {
     // Generate pipeline ID
     var pipelineId = Guid.NewGuid();
-    
+
     // Deserialize and validate the pipeline schema
     var pipeline = JsonSerializer.Deserialize<PipelineSchema>(request.Schema.Body, jsonOptions)!;
 
     // Send message to the first worker in the pipeline
-    await pipelineRouter.SendAsync(new WorkerMessage
+    await workerChannel.SendAsync(new WorkerMessage
     {
         PipelineId = pipelineId,
         Workitem = request.Workitem,
         Step = pipeline.Step
     });
-
-    // Store the current step in the pipeline state
-    await pipelineStateService.PutStepAsync(pipelineId, request.Workitem, pipeline.Step);
 
     return new CreatePipelineResponse(pipelineId);
 });

@@ -4,24 +4,22 @@ WORKDIR /src
 
 # Copy solution file
 COPY ccp-poc.sln ./
-
-# Copy project files for restore (better Docker layer caching)
-COPY worker/worker.csproj ./worker/
+COPY ccp/ccp.csproj ./ccp/
 COPY shared/shared.csproj ./shared/
+COPY worker/worker.csproj ./worker/
 
-# Restore dependencies
-RUN dotnet restore "./worker/worker.csproj"
+# Restore dependencies - restore solution first, then specific project
+RUN dotnet restore "ccp-poc.sln"
 
 # Copy the rest of the source code
-COPY worker/ ./worker/
-COPY shared/ ./shared/
+COPY . ./
 
 # Build the application
 WORKDIR /src/worker
-RUN dotnet publish -c Development -o /app/publish --no-restore
+RUN dotnet publish -c Development -o /app/publish
 
 # Use the official .NET 8 runtime image
-FROM mcr.microsoft.com/dotnet/runtime:8.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 
 # Copy the published application from the build stage

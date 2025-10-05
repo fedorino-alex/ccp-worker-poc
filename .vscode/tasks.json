@@ -2,12 +2,12 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "build-ccp",
+            "label": "build-solution",
             "command": "dotnet",
             "type": "process",
             "args": [
                 "build",
-                "${workspaceFolder}/ccp/ccp.csproj",
+                "${workspaceFolder}/ccp-poc.sln",
                 "/property:GenerateFullPaths=true",
                 "/consoleloggerparameters:NoSummary"
             ],
@@ -16,49 +16,6 @@
                 "kind": "build",
                 "isDefault": true
             }
-        },
-        {
-            "label": "build-ccp-release",
-            "command": "dotnet",
-            "type": "process",
-            "args": [
-                "build",
-                "${workspaceFolder}/ccp/ccp.csproj",
-                "--configuration",
-                "Release",
-                "/property:GenerateFullPaths=true",
-                "/consoleloggerparameters:NoSummary"
-            ],
-            "problemMatcher": "$msCompile",
-            "group": "build"
-        },
-        {
-            "label": "publish-ccp",
-            "command": "dotnet",
-            "type": "process",
-            "args": [
-                "publish",
-                "${workspaceFolder}/ccp/ccp.csproj",
-                "--configuration",
-                "Release",
-                "--output",
-                "${workspaceFolder}/ccp/bin/Release/net8.0/publish"
-            ],
-            "problemMatcher": "$msCompile",
-            "group": "build"
-        },
-        {
-            "label": "watch-ccp",
-            "command": "dotnet",
-            "type": "process",
-            "args": [
-                "watch",
-                "run",
-                "--project",
-                "${workspaceFolder}/ccp/ccp.csproj"
-            ],
-            "problemMatcher": "$msCompile",
-            "group": "build"
         }
     ]
 }
