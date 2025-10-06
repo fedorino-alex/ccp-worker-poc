@@ -127,9 +127,17 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
 
     private async Task HandleFinishedMessage(ControlPlaneMessage workerMessage)
     {
-        _logger.LogInformation("Worker {WorkerId} completed step for pipeline {PipelineId}", 
-            workerMessage.WorkerId, workerMessage.PipelineId);
-        
+        if (workerMessage.ErrorMessage is null)
+        {
+            _logger.LogInformation("Worker {WorkerId} finished step for pipeline {PipelineId}", 
+                workerMessage.WorkerId, workerMessage.PipelineId);
+        }
+        else
+        {
+            _logger.LogWarning("Worker {WorkerId} finished step for pipeline {PipelineId} with error: {ErrorMessage}", 
+                workerMessage.WorkerId, workerMessage.PipelineId, workerMessage.ErrorMessage);
+        }
+
         await _pipelineStateService.DeleteStepAsync(workerMessage.PipelineId, workerMessage.Step);
     }
 

@@ -7,6 +7,7 @@ namespace shared.Services;
 public interface IWorkerChannel
 {
     Task SendAsync(WorkerMessage message);
+    Task DeadLetterAsync(WorkerMessage message);
 }
 
 public class WorkerChannel : IWorkerChannel
@@ -18,6 +19,21 @@ public class WorkerChannel : IWorkerChannel
     {
         _rabbitMQInfrastructure = rabbitMQInfrastructure;
         _jsonOptions = jsonOptions;
+    }
+
+    public async Task DeadLetterAsync(WorkerMessage message)
+    {
+        var stepDlx = $"{message.Step.Name}-dlx";
+
+        await _rabbitMQInfrastructure.DeclareExchangeAsync(stepDlx, true);
+        await _rabbitMQInfrastructure.DeclareQueueAsync(stepDlx);
+        await _rabbitMQInfrastructure.DeclareBindingAsync(stepDlx, stepDlx, stepDlx);
+
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(message, _jsonOptions);
+        await _rabbitMQInfrastructure.Channel.BasicPublishAsync(
+            exchange: stepDlx,                        // use step name as exchange and queue name
+            routingKey: stepDlx,                      // assuming step.Name is the queue name
+            body: new ReadOnlyMemory<byte>(bytes));
     }
 
     public async Task SendAsync(WorkerMessage message)

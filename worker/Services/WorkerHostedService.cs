@@ -2,7 +2,6 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
-using RabbitMQ.Client.Events;
 using shared.Messages;
 using shared.Models;
 using shared.Services;
@@ -50,71 +49,29 @@ public class WorkerHostedService : BackgroundService
 
             while (!stoppingToken.IsCancellationRequested)
             {
-                var messageResult = await channel.BasicGetAsync(_options.Name, false);
-                if (messageResult is null)
+                // consume a message
+                (var flowControl, (var messageResult, var workerMessage)) = await ConsumeWorkitem(channel, stoppingToken);
+                if (flowControl is false)
                 {
-                    _logger.LogInformation("No messages in the queue '{QueueName}'", _options.Name);
-                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); // wait before checking again
-                    continue;
-                }
-
-                var message = messageResult.Body.ToArray();
-                var workerMessage = JsonSerializer.Deserialize<WorkerMessage>(message, _jsonOptions);
-                if (workerMessage is null)
-                {
-                    _logger.LogWarning("Failed to deserialize worker message: {Message}", Encoding.UTF8.GetString(message));
-                    await channel.BasicNackAsync(messageResult.DeliveryTag, false, false);
                     continue;
                 }
 
                 using var heartbeatCts = new CancellationTokenSource();
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, heartbeatCts.Token);
 
-                _ = PublishHeartbeat(workerMessage.PipelineId, linkedCts.Token); // start sending heartbeats
+                _ = PublishHeartbeat(workerMessage!.PipelineId, linkedCts.Token); // start sending heartbeats
 
                 try
                 {
-                    await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
-                    {
-                        PipelineId = workerMessage.PipelineId,
-                        MessageType = ServiceMessageType.Started,
-                        Step = workerMessage.Step,
-                        Workitem = workerMessage.Workitem,
-                        WorkerId = _options.Name
-                    });
-
-                    await channel.BasicAckAsync(messageResult.DeliveryTag, false);
-                    _logger.LogInformation("Processing workitem {WorkitemId} for pipeline {PipelineId} on step {Step}",
-                        workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
-
                     // Process the message
-                    await ProcessWorkitem(workerMessage.Workitem, stoppingToken);
-
-                    _logger.LogInformation("Completed workitem {WorkitemId} for pipeline {PipelineId} on step {Step}",
-                        workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
-
-                    await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
+                    await WrapWithControlPlaneEvents(workerMessage, async () =>
                     {
-                        PipelineId = workerMessage.PipelineId,
-                        MessageType = ServiceMessageType.Finished,
-                        Step = workerMessage.Step,
-                        Workitem = workerMessage.Workitem,
-                        WorkerId = _options.Name
+                        await channel.BasicAckAsync(messageResult!.DeliveryTag, false); // acknowledge the message
+                        await ProcessWorkitem(workerMessage.Workitem, stoppingToken);
                     });
 
-                    // If there are more steps, send to the next worker
-                    if (workerMessage.Step.Next is not null)
-                    {
-                        await _workerChannel.SendAsync(new WorkerMessage
-                        {
-                            PipelineId = workerMessage.PipelineId,
-                            Workitem = workerMessage.Workitem,
-                            Step = workerMessage.Step
-                        });
-
-                        _logger.LogInformation("Forwarded workitem {WorkitemId} for pipeline {PipelineId} to next step {NextStep}",
-                            workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Next.Name);
-                    }
+                    // If processing succeeded, dispatch to the next step
+                    await DispatchToNextStepAsync(workerMessage);
                 }
                 catch (OperationCanceledException)
                 {
@@ -122,33 +79,7 @@ public class WorkerHostedService : BackgroundService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error processing workitem {WorkitemId} for pipeline {PipelineId} on step {Step}",
-                        workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
-
-                    // Optionally, you can send a failure message to the control plane here
-                    await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
-                    {
-                        PipelineId = workerMessage.PipelineId,
-                        MessageType = ServiceMessageType.Finished,
-                        Step = workerMessage.Step,
-                        Workitem = workerMessage.Workitem,
-                        WorkerId = _options.Name,
-                        ErrorMessage = ex.Message
-                    });
-
-                    if (workerMessage.Workitem.RetryAttempt < 3)
-                    {
-                        workerMessage.Workitem.RetryAttempt += 1;           // increase retry attempt
-                        await _workerChannel.SendAsync(new WorkerMessage
-                        {
-                            PipelineId = workerMessage.PipelineId,
-                            Workitem = workerMessage.Workitem,
-                            Step = workerMessage.Step
-                        });
-
-                        _logger.LogInformation("Re-queued workitem {WorkitemId} for pipeline {PipelineId} to step {Step} (RetryAttempt={RetryAttempt})",
-                            workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name, workerMessage.Workitem.RetryAttempt);
-                    }
+                    await HandleProcessingException(workerMessage, ex);
                 }
                 finally
                 {
@@ -167,29 +98,158 @@ public class WorkerHostedService : BackgroundService
         }
     }
 
+    private async Task DispatchToNextStepAsync(WorkerMessage workerMessage)
+    {
+        // If there are more steps, send to the next worker
+        if (workerMessage.Step.Next is not null)
+        {
+            await _workerChannel.SendAsync(new WorkerMessage
+            {
+                PipelineId = workerMessage.PipelineId,
+                Workitem = workerMessage.Workitem,
+                Step = workerMessage.Step.Next
+            });
+
+            _logger.LogInformation("Forwarded workitem {WorkitemId} for pipeline {PipelineId} to next step {NextStep}",
+                workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Next.Name);
+        }
+    }
+
+    private async Task<(bool flowControl, (BasicGetResult? messageResult, WorkerMessage? workerMessage) value)> ConsumeWorkitem(IChannel channel, CancellationToken stoppingToken)
+    {
+        var messageResult = await channel.BasicGetAsync(_options.Name, false);
+        if (messageResult is null)
+        {
+            _logger.LogDebug("No messages in the queue '{QueueName}'", _options.Name);
+            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); // wait before checking again
+            return (flowControl: false, value: default);
+        }
+
+        WorkerMessage? workerMessage = null;
+        try
+        {
+            var message = messageResult.Body.ToArray();
+            workerMessage = JsonSerializer.Deserialize<WorkerMessage>(message, _jsonOptions);
+            if (workerMessage is null)
+            {
+                _logger.LogWarning("Failed to deserialize worker message: {Message}", Encoding.UTF8.GetString(message));
+                await channel.BasicNackAsync(messageResult.DeliveryTag, false, false); // reject the message
+                return (flowControl: false, value: default);
+            }
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogError(ex, "JSON deserialization error for message: {Message}", Encoding.UTF8.GetString(messageResult.Body.ToArray()));
+            await channel.BasicNackAsync(messageResult.DeliveryTag, false, false); // reject the message
+            return (flowControl: false, value: default);
+        }
+
+        return (flowControl: true, value: (messageResult, workerMessage));
+    }
+
+    private async Task HandleProcessingException(WorkerMessage workerMessage, Exception ex)
+    {
+        _logger.LogError(ex, "Error processing workitem {WorkitemId} for pipeline {PipelineId} on step {Step}",
+            workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
+
+        // Optionally, you can send a failure message to the control plane here
+        await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
+        {
+            PipelineId = workerMessage.PipelineId,
+            MessageType = ServiceMessageType.Finished,
+            Step = workerMessage.Step,
+            Workitem = workerMessage.Workitem,
+            WorkerId = _options.Name,
+            ErrorMessage = ex.Message
+        });
+
+        if (workerMessage.Workitem.RetryAttempt < 3)
+        {
+            workerMessage.Workitem.RetryAttempt += 1;           // increase retry attempt
+            await _workerChannel.SendAsync(new WorkerMessage
+            {
+                PipelineId = workerMessage.PipelineId,
+                Workitem = workerMessage.Workitem,
+                Step = workerMessage.Step
+            });
+
+            _logger.LogInformation("Re-queued workitem {WorkitemId} for pipeline {PipelineId} to step {Step} (RetryAttempt={RetryAttempt})",
+                workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name, workerMessage.Workitem.RetryAttempt);
+        }
+        else
+        {
+            _logger.LogWarning("Workitem {WorkitemId} for pipeline {PipelineId} reached max retry attempts and will not be re-queued",
+                workerMessage.Workitem.Id, workerMessage.PipelineId);
+
+            await _workerChannel.SendAsync(new WorkerMessage
+            {
+                PipelineId = workerMessage.PipelineId,
+                Workitem = workerMessage.Workitem,
+                Step = workerMessage.Step
+            });
+
+            // TODO: complete pipeline with error
+        }
+    }
+
+    private async Task WrapWithControlPlaneEvents(WorkerMessage workerMessage, Func<Task> func)
+    {
+        await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
+        {
+            PipelineId = workerMessage.PipelineId,
+            MessageType = ServiceMessageType.Started,
+            Step = workerMessage.Step,
+            Workitem = workerMessage.Workitem,
+            WorkerId = _options.Name
+        });
+
+        _logger.LogInformation("Processing workitem {WorkitemId} for pipeline {PipelineId} on step {Step}",
+            workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
+
+        await func();
+
+        _logger.LogInformation("Completed workitem {WorkitemId} for pipeline {PipelineId} on step {Step}",
+            workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
+
+
+        await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
+        {
+            PipelineId = workerMessage.PipelineId,
+            MessageType = ServiceMessageType.Finished,
+            Step = workerMessage.Step,
+            Workitem = workerMessage.Workitem,
+            WorkerId = _options.Name
+        });
+    }
+
     private async Task ProcessWorkitem(WorkitemDto workitem, CancellationToken stoppingToken)
     {
         // Simulate workitem processing
 
-        var processingTime = TimeSpan.FromMinutes(new Random().Next(15, 180));
-        //var processingTime = TimeSpan.FromSeconds(new Random().Next(15, 180));
+        //var processingTime = TimeSpan.FromMinutes(new Random().Next(15, 180));
+        var processingTime = TimeSpan.FromSeconds(new Random().Next(15, 180));
 
         var begin = DateTime.UtcNow;
         var end = begin + processingTime;
 
-        _logger.LogInformation("Processing workitem {WorkitemId} for {ProcessingTime}", workitem.Id, processingTime);
+        _logger.LogInformation("{Timestamp}: Processing workitem {WorkitemId} for {ProcessingTime}", DateTimeOffset.Now, workitem.Id, processingTime);
 
         while (DateTime.UtcNow < end && !stoppingToken.IsCancellationRequested)
         {
-            await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken); // simulate doing some work
+            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); // simulate doing some work
 
             var elapsed = DateTime.UtcNow - begin;
             var progress = Math.Min(100, (int)(elapsed.TotalSeconds / processingTime.TotalSeconds * 100));
 
-            _logger.LogInformation("{Timestamp}: Workitem {WorkitemId} progress: {Progress}%", DateTime.UtcNow.ToString("O"), workitem.Id, progress);
+            if (elapsed.TotalSeconds > 150)
+            {
+                throw new Exception($"{DateTimeOffset.Now}: Workitem has simulated processing error.");
+            }
+
+            _logger.LogInformation("{Timestamp}: Workitem {WorkitemId} progress: {Progress}%", DateTimeOffset.Now, workitem.Id, progress);
         }
 
-        _logger.LogInformation("Completed processing workitem {WorkitemId}", workitem.Id);
+        _logger.LogInformation("{Timestamp}: Completed processing workitem {WorkitemId}", DateTimeOffset.Now, workitem.Id);
     }
 
     private async Task PublishHeartbeat(Guid pipelineId, CancellationToken cancellationToken)

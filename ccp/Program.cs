@@ -60,8 +60,18 @@ app.MapGet("/", () => "Hello World!");
 // return pipeline with active heartbeat
 app.MapGet("/pipeline", async Task<string[]> (IPipelineStateService pipelineStateService) =>
 {
+    List<string> results = new List<string>();
+
     var pipelineIds = await pipelineStateService.GetHeartbeatPipelinesAsync();
-    return pipelineIds.Select(id => id.ToString()).ToArray();
+    foreach (var id in pipelineIds)
+    {
+        var workitem = await pipelineStateService.GetWorkitemAsync(id);
+        var step = await pipelineStateService.GetCurrentStepAsync(id);
+
+        results.Add($"{workitem!.Name}, ({id}): {step!.Name}");
+    }
+
+    return results.Order().ToArray();
 });
 
 // return full details of a specific pipeline
