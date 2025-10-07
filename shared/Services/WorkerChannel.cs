@@ -1,6 +1,8 @@
 using RabbitMQ.Client;
 using shared.Messages;
 using System.Text.Json;
+using System.Diagnostics;
+using System.Text;
 
 namespace shared.Services;
 
@@ -30,9 +32,16 @@ public class WorkerChannel : IWorkerChannel
         await _rabbitMQInfrastructure.DeclareBindingAsync(stepDlx, stepDlx, stepDlx);
 
         var bytes = JsonSerializer.SerializeToUtf8Bytes(message, _jsonOptions);
+        
+        // Create basic properties and inject trace context
+        var properties = new BasicProperties();
+        InjectTraceContext(properties);
+        
         await _rabbitMQInfrastructure.Channel.BasicPublishAsync(
             exchange: stepDlx,                        // use step name as exchange and queue name
             routingKey: stepDlx,                      // assuming step.Name is the queue name
+            mandatory: false,
+            basicProperties: properties,
             body: new ReadOnlyMemory<byte>(bytes));
     }
 
@@ -48,9 +57,38 @@ public class WorkerChannel : IWorkerChannel
         // Send the message
         var bytes = JsonSerializer.SerializeToUtf8Bytes(message, _jsonOptions);
 
+        // Create basic properties and inject trace context
+        var properties = new BasicProperties();
+        InjectTraceContext(properties);
+
         await _rabbitMQInfrastructure.Channel.BasicPublishAsync(
             exchange: stepName,                        // use step name as exchange and queue name
             routingKey: stepName,                      // assuming step.Name is the queue name
+            mandatory: false,
+            basicProperties: properties,
             body: new ReadOnlyMemory<byte>(bytes));
+    }
+
+    private static void InjectTraceContext(BasicProperties properties)
+    {
+        var currentActivity = Activity.Current;
+        if (currentActivity != null)
+        {
+            properties.Headers ??= new Dictionary<string, object?>();
+            
+            // Inject W3C Trace Context
+            var traceParent = currentActivity.Id;
+            if (!string.IsNullOrEmpty(traceParent))
+            {
+                properties.Headers["traceparent"] = Encoding.UTF8.GetBytes(traceParent);
+            }
+
+            // Inject trace state if available
+            var traceState = currentActivity.TraceStateString;
+            if (!string.IsNullOrEmpty(traceState))
+            {
+                properties.Headers["tracestate"] = Encoding.UTF8.GetBytes(traceState);
+            }
+        }
     }
 }

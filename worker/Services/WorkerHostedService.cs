@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Diagnostics;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 using shared.Messages;
@@ -11,6 +12,8 @@ namespace worker.Services;
 
 public class WorkerHostedService : BackgroundService
 {
+    private static readonly ActivitySource ActivitySource = new("Worker.HostedService");
+    
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ILogger<WorkerHostedService> _logger;
     private readonly WorkerOptions _options;
@@ -50,11 +53,17 @@ public class WorkerHostedService : BackgroundService
             while (!stoppingToken.IsCancellationRequested)
             {
                 // consume a message
-                (var flowControl, (var messageResult, var workerMessage)) = await ConsumeWorkitem(channel, stoppingToken);
+                (var flowControl, (var messageResult, var workerMessage, var parentContext)) = await ConsumeWorkitem(channel, stoppingToken);
                 if (flowControl is false)
                 {
                     continue;
                 }
+
+                // Start activity with parent context from message headers
+                using var activity = ActivitySource.StartActivity("ProcessWorkitem", ActivityKind.Consumer, parentContext);
+                activity?.SetTag("pipeline.id", workerMessage!.PipelineId.ToString());
+                activity?.SetTag("workitem.id", workerMessage!.Workitem.Id.ToString());
+                activity?.SetTag("step.name", workerMessage!.Step.Name);
 
                 using var heartbeatCts = new CancellationTokenSource();
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, heartbeatCts.Token);
@@ -103,6 +112,11 @@ public class WorkerHostedService : BackgroundService
         // If there are more steps, send to the next worker
         if (workerMessage.Step.Next is not null)
         {
+            using var activity = ActivitySource.StartActivity("DispatchToNextStep");
+            activity?.SetTag("next.step.name", workerMessage.Step.Next.Name);
+            activity?.SetTag("pipeline.id", workerMessage.PipelineId.ToString());
+            activity?.SetTag("workitem.id", workerMessage.Workitem.Id.ToString());
+
             await _workerChannel.SendAsync(new WorkerMessage
             {
                 PipelineId = workerMessage.PipelineId,
@@ -115,7 +129,7 @@ public class WorkerHostedService : BackgroundService
         }
     }
 
-    private async Task<(bool flowControl, (BasicGetResult? messageResult, WorkerMessage? workerMessage) value)> ConsumeWorkitem(IChannel channel, CancellationToken stoppingToken)
+    private async Task<(bool flowControl, (BasicGetResult? messageResult, WorkerMessage? workerMessage, ActivityContext parentContext) value)> ConsumeWorkitem(IChannel channel, CancellationToken stoppingToken)
     {
         var messageResult = await channel.BasicGetAsync(_options.Name, false);
         if (messageResult is null)
@@ -124,6 +138,9 @@ public class WorkerHostedService : BackgroundService
             await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); // wait before checking again
             return (flowControl: false, value: default);
         }
+
+        // Extract trace context from message headers
+        var parentContext = ExtractTraceContext(messageResult.BasicProperties?.Headers);
 
         WorkerMessage? workerMessage = null;
         try
@@ -144,11 +161,13 @@ public class WorkerHostedService : BackgroundService
             return (flowControl: false, value: default);
         }
 
-        return (flowControl: true, value: (messageResult, workerMessage));
+        return (flowControl: true, value: (messageResult, workerMessage, parentContext));
     }
 
     private async Task HandleProcessingException(WorkerMessage workerMessage, Exception ex)
     {
+        Activity.Current?.SetStatus(ActivityStatusCode.Error, ex.Message);
+
         _logger.LogError(ex, "Error processing workitem {WorkitemId} for pipeline {PipelineId} on step {Step}",
             workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
 
@@ -272,5 +291,23 @@ public class WorkerHostedService : BackgroundService
                 break;
             }
         }
+    }
+
+    private static ActivityContext ExtractTraceContext(IDictionary<string, object?>? headers)
+    {
+        if (headers == null)
+            return default;
+
+        // Extract traceparent header (W3C Trace Context)
+        if (headers.TryGetValue("traceparent", out var traceParentObj) && traceParentObj is byte[] traceParentBytes)
+        {
+            var traceParent = Encoding.UTF8.GetString(traceParentBytes);
+            if (ActivityContext.TryParse(traceParent, null, out var activityContext))
+            {
+                return activityContext;
+            }
+        }
+
+        return default;
     }
 }

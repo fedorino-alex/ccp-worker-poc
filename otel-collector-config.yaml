@@ -1,0 +1,53 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+  memory_limiter:
+    limit_mib: 512
+    check_interval: 5
+
+exporters:
+  # Zipkin
+  zipkin:
+    endpoint: "http://zipkin:9411/api/v2/spans"
+
+  # Grafana Tempo
+  otlp/tempo:
+    endpoint: "http://tempo:4317"
+    tls:
+      insecure: true
+
+  # Seq (using OTLP HTTP)
+  otlphttp/seq:
+    endpoint: "http://seq:5341/ingest/otlp"
+    headers:
+      "X-Seq-ApiKey": "your-seq-api-key-here"
+
+  # Console for debugging
+  debug:
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [zipkin, otlp/tempo, otlphttp/seq]
+
+    # metrics:
+    #   receivers: [otlp]
+    #   processors: [memory_limiter, batch]
+    #   exporters: [logging]
+
+  extensions: [health_check]
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133

@@ -3,14 +3,47 @@ using RabbitMQ.Client;
 using StackExchange.Redis;
 using ccp.Services;
 using ccp.Models;
-using shared.Models;
 using shared.Messages;
 using shared.Services;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Ensure environment variables are loaded
+builder.Configuration.AddEnvironmentVariables();
+
+// Configure OpenTelemetry
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource
+        .AddService("ccp", "1.0.0"))
+    .WithTracing(tracing => tracing
+        .AddAspNetCoreInstrumentation(options =>
+        {
+            options.RecordException = true;
+            options.EnrichWithHttpRequest = (activity, request) =>
+            {
+                activity.SetTag("http.request_content_length", request.ContentLength);
+                activity.SetTag("http.request_content_type", request.ContentType);
+            };
+            options.EnrichWithHttpResponse = (activity, response) =>
+            {
+                activity.SetTag("http.response_content_length", response.ContentLength);
+                activity.SetTag("http.response_content_type", response.ContentType);
+            };
+        })
+        .AddSource("ccp.*")
+        .AddOtlpExporter(otlpOptions =>
+        {
+            otlpOptions.Endpoint = new Uri(builder.Configuration.GetValue<string>("OpenTelemetry:Otlp:Endpoint")
+                ?? "http://localhost:4317");
+        }));
+
 // Configure Redis connection
-var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
+var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "redis:6379";
+Console.WriteLine($"Redis Connection String from config: '{redisConnectionString}'");
+Console.WriteLine($"Environment variable ConnectionString__Redis: '{Environment.GetEnvironmentVariable("ConnectionString__Redis")}'");
+
 builder.Services.AddSingleton<IConnectionMultiplexer>(provider =>
     ConnectionMultiplexer.Connect(redisConnectionString));
 builder.Services.AddSingleton(provider =>
@@ -60,6 +93,7 @@ app.MapGet("/", () => "Hello World!");
 // return pipeline with active heartbeat
 app.MapGet("/pipeline", async Task<string[]> (IPipelineStateService pipelineStateService) =>
 {
+    // its not the best perfomance, but for demo purposes its ok
     List<string> results = new List<string>();
 
     var pipelineIds = await pipelineStateService.GetHeartbeatPipelinesAsync();

@@ -3,12 +3,32 @@ using worker.Options;
 using System.Text.Json;
 using shared.Services;
 using RabbitMQ.Client;
-using StackExchange.Redis;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging
     .ClearProviders()
     .AddConsole();
+
+var workerName = builder.Configuration.GetValue<string>("Worker:Name")!;
+
+// Configure OpenTelemetry
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource
+        .AddService(workerName)
+        .AddAttributes(new Dictionary<string, object>
+        {
+            ["worker.name"] = workerName,
+            ["deployment.environment"] = builder.Environment.EnvironmentName
+        }))
+    .WithTracing(tracing => tracing
+        .AddSource("worker.*")
+        .AddOtlpExporter(otlpOptions =>
+        {
+            otlpOptions.Endpoint = new Uri(builder.Configuration.GetValue<string>("OpenTelemetry:Otlp:Endpoint")
+                ?? "http://localhost:4317");
+        }));
 
 var jsonSerializerOptions = new JsonSerializerOptions
 {
@@ -25,14 +45,6 @@ builder.Services
     .BindConfiguration(WorkerOptions.SectionName)
     .ValidateDataAnnotations()
     .ValidateOnStart();
-
-var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
-builder.Services.AddSingleton<IConnectionMultiplexer>(provider => ConnectionMultiplexer.Connect(redisConnectionString));
-builder.Services.AddSingleton(provider =>
-{
-    var connection = provider.GetRequiredService<IConnectionMultiplexer>();
-    return connection.GetDatabase();
-});
 
 // Configure RabbitMQ connection
 builder.Services.AddSingleton<IConnectionFactory>(provider =>

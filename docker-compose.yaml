@@ -1,82 +1,6 @@
 version: '3.8'
 
 services:
-  # CCP Instance 1 - Primary
-  ccp-1:
-    build:
-      context: .
-      dockerfile: ccp/Dockerfile
-    depends_on:
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
-      - RabbitMQ__HostName=rabbitmq
-      - RabbitMQ__Port=5672
-      - RabbitMQ__UserName=guest
-      - RabbitMQ__Password=guest
-      - INSTANCE_NAME=ccp-1
-    networks:
-      - app-network
-
-  # CCP Instance 2 - Secondary
-  ccp-2:
-    build:
-      context: .
-      dockerfile: ccp/Dockerfile
-    depends_on:
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
-      - RabbitMQ__HostName=rabbitmq
-      - RabbitMQ__Port=5672
-      - RabbitMQ__UserName=guest
-      - RabbitMQ__Password=guest
-      - INSTANCE_NAME=ccp-2
-    networks:
-      - app-network
-
-  # CCP Instance 3 - Tertiary
-  ccp-3:
-    build:
-      context: .
-      dockerfile: ccp/Dockerfile
-    depends_on:
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
-      - RabbitMQ__HostName=rabbitmq
-      - RabbitMQ__Port=5672
-      - RabbitMQ__UserName=guest
-      - RabbitMQ__Password=guest
-      - INSTANCE_NAME=ccp-3
-    networks:
-      - app-network
-
-  # nginx Load Balancer (ONLY access point)
-  nginx:
-    image: nginx:1.25-alpine
-    ports:
-      - "5000:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - ccp-1
-      - ccp-2
-      - ccp-3
-    networks:
-      - app-network
 
   # Redis service
   redis:
@@ -115,25 +39,130 @@ services:
       retries: 5
       start_period: 30s
 
+  # OpenTelemetry Collector
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8889:8889"   # Prometheus metrics
+      - "13133:13133" # Health check
+    networks:
+      - app-network
+    depends_on:
+      - zipkin
+      - tempo
+      - seq
+    restart: unless-stopped
+
+  # CCP Instance 1 - Primary
+  ccp-1:
+    build:
+      context: .
+      dockerfile: ccp/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionString__Redis=redis:6379
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__Port=5672
+      - RabbitMQ__UserName=guest
+      - RabbitMQ__Password=guest
+      - INSTANCE_NAME=ccp-1
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+    networks:
+      - app-network
+
+  # CCP Instance 2 - Secondary
+  ccp-2:
+    build:
+      context: .
+      dockerfile: ccp/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionString__Redis=redis:6379
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__Port=5672
+      - RabbitMQ__UserName=guest
+      - RabbitMQ__Password=guest
+      - INSTANCE_NAME=ccp-2
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+    networks:
+      - app-network
+
+  # CCP Instance 3 - Tertiary
+  ccp-3:
+    build:
+      context: .
+      dockerfile: ccp/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionString__Redis=redis:6379
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__Port=5672
+      - RabbitMQ__UserName=guest
+      - RabbitMQ__Password=guest
+      - INSTANCE_NAME=ccp-3
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+    networks:
+      - app-network
+
+  # nginx Load Balancer (ONLY access point)
+  nginx:
+    image: nginx:1.25-alpine
+    ports:
+      - "5000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ccp-1
+      - ccp-2
+      - ccp-3
+    networks:
+      - app-network
+
   # # Worker service
   validation-1:
     build:
       context: .
       dockerfile: worker/Dockerfile
     depends_on:
-      redis:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__Port=5672
       - RabbitMQ__UserName=guest
       - RabbitMQ__Password=guest
       - Worker__Name=validation
       - INSTANCE_NAME=worker-validation-1
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
 
@@ -142,19 +171,19 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     depends_on:
-      redis:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__Port=5672
       - RabbitMQ__UserName=guest
       - RabbitMQ__Password=guest
       - Worker__Name=validation
       - INSTANCE_NAME=worker-validation-2
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
 
@@ -163,19 +192,19 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     depends_on:
-      redis:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__Port=5672
       - RabbitMQ__UserName=guest
       - RabbitMQ__Password=guest
       - Worker__Name=validation
       - INSTANCE_NAME=worker-validation-3
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
 
@@ -184,19 +213,19 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     depends_on:
-      redis:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__Port=5672
       - RabbitMQ__UserName=guest
       - RabbitMQ__Password=guest
       - Worker__Name=processing
       - INSTANCE_NAME=worker-processing-1
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
 
@@ -205,19 +234,19 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     depends_on:
-      redis:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__Port=5672
       - RabbitMQ__UserName=guest
       - RabbitMQ__Password=guest
       - Worker__Name=processing
       - INSTANCE_NAME=worker-processing-2
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
 
@@ -226,19 +255,19 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     depends_on:
-      redis:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__Port=5672
       - RabbitMQ__UserName=guest
       - RabbitMQ__Password=guest
       - Worker__Name=processing
       - INSTANCE_NAME=worker-processing-3
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
 
@@ -247,19 +276,19 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     depends_on:
-      redis:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__Port=5672
       - RabbitMQ__UserName=guest
       - RabbitMQ__Password=guest
       - Worker__Name=notification
       - INSTANCE_NAME=worker-notification-1
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
 
@@ -268,17 +297,19 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     depends_on:
-      - redis
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__Port=5672
       - RabbitMQ__UserName=guest
       - RabbitMQ__Password=guest
       - Worker__Name=notification
       - INSTANCE_NAME=worker-notification-2
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
 
@@ -287,25 +318,80 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     depends_on:
-      redis:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - Redis__ConnectionString=redis:6379
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__Port=5672
       - RabbitMQ__UserName=guest
       - RabbitMQ__Password=guest
       - Worker__Name=notification
       - INSTANCE_NAME=worker-notification-3
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+    networks:
+      - app-network
+
+  # Zipkin
+  zipkin:
+    image: openzipkin/zipkin:latest
+    ports:
+      - "9411:9411"   # Zipkin UI
+    networks:
+      - app-network
+
+  # Seq
+  seq:
+    image: datalust/seq:latest
+    ports:
+      - "5341:80"     # Seq UI
+    environment:
+      - ACCEPT_EULA=Y
+      - SEQ_FIRSTRUN_NOAUTHENTICATION=true
+    volumes:
+      - seq_data:/data
+    networks:
+      - app-network
+
+  # Grafana Tempo
+  tempo:
+    image: grafana/tempo:latest
+    command: [ "-config.file=/etc/tempo.yaml" ]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo API
+    networks:
+      - app-network
+    user: "0:0"  # Run as root to avoid permission issues
+
+  # Grafana (for Tempo UI)
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"   # Grafana UI
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
     networks:
       - app-network
 
 volumes:
   redis_data:
   rabbitmq_data:
+  seq_data:
+  tempo_data:
+  grafana_data:
+  signoz_data:
+  skywalking_data:
 
 networks:
   app-network:
