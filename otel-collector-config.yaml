@@ -6,6 +6,10 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
+  # Fluentd Forward receiver for container logs
+  fluentforward:
+    endpoint: 0.0.0.0:8006
+
 processors:
   batch:
     timeout: 1s
@@ -13,6 +17,37 @@ processors:
   memory_limiter:
     limit_mib: 512
     check_interval: 5
+
+  # Log-specific processors for structured data
+  attributes/logs:
+    actions:
+      - key: service.name
+        action: upsert
+        from_attribute: service_name
+      - key: service.instance.id
+        action: upsert
+        from_attribute: instance_name
+      - key: trace_id
+        action: upsert
+        from_attribute: trace_id
+      - key: span_id
+        action: upsert
+        from_attribute: span_id
+      - key: pipeline.id
+        action: upsert
+        from_attribute: pipeline_id
+      - key: workitem.id
+        action: upsert
+        from_attribute: workitem_id
+      - key: worker.name
+        action: upsert
+        from_attribute: worker_name
+
+  resource/logs:
+    attributes:
+      - key: log.source
+        value: fluentd-docker
+        action: upsert
 
 exporters:
   # Zipkin
@@ -31,6 +66,10 @@ exporters:
     headers:
       "X-Seq-ApiKey": "your-seq-api-key-here"
 
+  # Grafana Loki for logs
+  loki:
+    endpoint: "http://loki:3100/loki/api/v1/push"
+
   # Console for debugging
   debug:
 
@@ -40,6 +79,11 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [zipkin, otlp/tempo, otlphttp/seq]
+
+    logs:
+      receivers: [otlp, fluentforward]
+      processors: [memory_limiter, resource/logs, attributes/logs, batch]
+      exporters: [otlphttp/seq, loki, debug]
 
     # metrics:
     #   receivers: [otlp]

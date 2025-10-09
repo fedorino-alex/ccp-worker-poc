@@ -43,12 +43,15 @@ public class WorkerHostedService : BackgroundService
         await _client.DeclareQueueAsync(_options.Name);
         await _client.DeclareBindingAsync(_options.Name, _options.Name, _options.Name);
 
-        _logger.LogInformation("Worker '{WorkerName}' is running at: {time}", _options.Name, DateTimeOffset.Now);
+        _logger.LogInformation("Worker '{WorkerName}' starting up at {Timestamp} with instance {InstanceName}", 
+            _options.Name, DateTimeOffset.Now, Environment.GetEnvironmentVariable("INSTANCE_NAME") ?? Environment.MachineName);
 
         try
         {
             var channel = _client.Channel;
             await channel.BasicQosAsync(0, 1, true, stoppingToken); // allow only one unacknowledged message at a time
+
+            _logger.LogInformation("Worker '{WorkerName}' is ready and listening for messages", _options.Name);
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -64,6 +67,22 @@ public class WorkerHostedService : BackgroundService
                 activity?.SetTag("pipeline.id", workerMessage!.PipelineId.ToString());
                 activity?.SetTag("workitem.id", workerMessage!.Workitem.Id.ToString());
                 activity?.SetTag("step.name", workerMessage!.Step.Name);
+                activity?.SetTag("worker.name", _options.Name);
+
+                // Add trace context to log scope for correlation
+                using var logScope = _logger.BeginScope(new Dictionary<string, object>
+                {
+                    ["TraceId"] = activity?.TraceId.ToString() ?? "unknown",
+                    ["SpanId"] = activity?.SpanId.ToString() ?? "unknown",
+                    ["PipelineId"] = workerMessage!.PipelineId.ToString(),
+                    ["WorkitemId"] = workerMessage.Workitem.Id.ToString(),
+                    ["StepName"] = workerMessage.Step.Name,
+                    ["WorkerName"] = _options.Name,
+                    ["InstanceName"] = Environment.GetEnvironmentVariable("INSTANCE_NAME") ?? Environment.MachineName
+                });
+
+                _logger.LogInformation("Received workitem {WorkitemId} for pipeline {PipelineId} at step {StepName}", 
+                    workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
 
                 using var heartbeatCts = new CancellationTokenSource();
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, heartbeatCts.Token);

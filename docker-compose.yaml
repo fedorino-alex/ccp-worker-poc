@@ -48,6 +48,7 @@ services:
     ports:
       - "4317:4317"   # OTLP gRPC receiver
       - "4318:4318"   # OTLP HTTP receiver
+      - "8006:8006"   # Fluentd Forward receiver
       - "8889:8889"   # Prometheus metrics
       - "13133:13133" # Health check
     networks:
@@ -56,6 +57,22 @@ services:
       - zipkin
       - tempo
       - seq
+      - loki
+    restart: unless-stopped
+
+  # Fluentd for collecting container logs
+  fluentd:
+    image: fluent/fluentd:v1.16-debian-1
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./fluentd.conf:/fluentd/etc/fluent.conf:ro
+      - fluentd_logs:/var/log
+    depends_on:
+      otel-collector:
+        condition: service_started
+    networks:
+      - app-network
     restart: unless-stopped
 
   # CCP Instance 1 - Primary
@@ -368,6 +385,18 @@ services:
       - app-network
     user: "0:0"  # Run as root to avoid permission issues
 
+  # Grafana Loki for logs
+  loki:
+    image: grafana/loki:latest
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"   # Loki API
+    volumes:
+      - loki_data:/loki
+    networks:
+      - app-network
+    restart: unless-stopped
+
   # Grafana (for Tempo UI)
   grafana:
     image: grafana/grafana:latest
@@ -392,6 +421,8 @@ volumes:
   grafana_data:
   signoz_data:
   skywalking_data:
+  loki_data:
+  fluentd_logs:
 
 networks:
   app-network:

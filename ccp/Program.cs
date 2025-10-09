@@ -13,10 +13,27 @@ var builder = WebApplication.CreateBuilder(args);
 // Ensure environment variables are loaded
 builder.Configuration.AddEnvironmentVariables();
 
-// Configure OpenTelemetry
+var instanceName = Environment.GetEnvironmentVariable("INSTANCE_NAME") ?? Environment.MachineName;
+var otlpEndpoint = builder.Configuration.GetValue<string>("OpenTelemetry:Otlp:Endpoint") ?? "http://localhost:4317";
+
+// Configure structured JSON console logging (Fluentd will parse JSON)
+builder.Logging.ClearProviders();
+builder.Logging.AddJsonConsole(options =>
+{
+    options.IncludeScopes = true;
+    options.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ";
+    options.UseUtcTimestamp = true;
+});
+
+// Configure OpenTelemetry for traces only
 builder.Services.AddOpenTelemetry()
     .ConfigureResource(resource => resource
-        .AddService("ccp", "1.0.0"))
+        .AddService("ccp", "1.0.0")
+        .AddAttributes(new Dictionary<string, object>
+        {
+            ["service.instance.id"] = instanceName,
+            ["deployment.environment"] = builder.Environment.EnvironmentName
+        }))
     .WithTracing(tracing => tracing
         .AddAspNetCoreInstrumentation(options =>
         {
@@ -35,8 +52,7 @@ builder.Services.AddOpenTelemetry()
         .AddSource("ccp.*")
         .AddOtlpExporter(otlpOptions =>
         {
-            otlpOptions.Endpoint = new Uri(builder.Configuration.GetValue<string>("OpenTelemetry:Otlp:Endpoint")
-                ?? "http://localhost:4317");
+            otlpOptions.Endpoint = new Uri(otlpEndpoint);
         }));
 
 // Configure Redis connection
