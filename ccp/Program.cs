@@ -38,7 +38,7 @@ builder.Services.AddOpenTelemetry()
         .AddRedisInstrumentation(configure =>
         {
             configure.SetVerboseDatabaseStatements = true;
-            configure.EnrichActivityWithTimingEvents = true;
+            configure.EnrichActivityWithTimingEvents = false;
         })
         .AddAspNetCoreInstrumentation(options =>
         {

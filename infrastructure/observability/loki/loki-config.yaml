@@ -1,0 +1,176 @@
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  log_level: info
+
+# OTLP configuration for receiving logs from OpenTelemetry Collector
+otlp_config:
+  resource_attributes:
+    # Define which resource attributes become labels (indexed)
+    labels:
+      - service.name
+      - service.instance.id
+      - service.namespace
+    # Define which resource attributes become structured metadata
+    structured_metadata:
+      - deployment.environment
+  
+  # Scope attributes configuration
+  scope_attributes:
+    # Define which scope attributes become labels (indexed)
+    labels:
+      - level
+      - logger
+      - instance
+      - worker_name
+    # Define which scope attributes become structured metadata  
+    structured_metadata:
+      - PipelineId
+      - WorkitemId
+      - RetryAttempt
+      - RestoreAttempt
+      - StepName
+      - InstanceName
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+# Schema configuration for your microservices logs
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: tsdb
+      object_store: filesystem
+      schema: v12
+      index:
+        prefix: index_
+        period: 24h
+
+# Ingester configuration
+ingester:
+  wal:
+    enabled: true
+    dir: /loki/wal
+  lifecycler:
+    address: 127.0.0.1
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+    final_sleep: 0s
+  chunk_idle_period: 1h
+  max_chunk_age: 1h
+  chunk_target_size: 1048576
+  chunk_retain_period: 30s
+
+# Storage configuration
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+    cache_ttl: 24h
+  filesystem:
+    directory: /loki/chunks
+
+# Compactor for better performance
+compactor:
+  working_directory: /loki/boltdb-shipper-compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 150
+
+# Limits configuration optimized for microservices
+limits_config:
+  # Query limits
+  enforce_metric_name: false
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  creation_grace_period: 10m
+  
+  # Ingestion limits
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 32
+  max_streams_per_user: 10000
+  max_line_size: 256000
+  
+  # Label limits (important for your service labels)
+  max_label_name_length: 1024
+  max_label_value_length: 4096
+  max_label_names_per_series: 30
+  
+  # Query timeout
+  query_timeout: 1m
+  
+  # Split queries by interval
+  split_queries_by_interval: 15m
+  
+  # Retention (adjust as needed)
+  retention_period: 744h  # 31 days
+  
+  # Stream-based sharding for better performance with many services
+  use_owned_stream_count: false
+  max_concurrent_tail_requests: 10
+  
+  # Index gateway limits
+  max_query_parallelism: 32
+  max_metadata_cache_freshness: 10m
+
+# Query range configuration
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+
+# Frontend configuration for better query performance
+frontend:
+  max_outstanding_per_tenant: 256
+  compress_responses: true
+
+# Query frontend worker
+query_scheduler:
+  max_outstanding_requests_per_tenant: 256
+
+# Ruler configuration (for alerting - optional)
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
+  rule_path: /loki/rules
+  alertmanager_url: http://localhost:9093
+  ring:
+    kvstore:
+      store: inmemory
+  enable_api: true
+
+# Analytics (optional)
+analytics:
+  reporting_enabled: false
+
+# Operational configuration
+operational_config:
+  allow_structured_metadata: true
+  structured_metadata_config:
+    max_entries_per_log_line: 128
+
+# Pattern ingester for log parsing optimization
+pattern_ingester:
+  enabled: true
+  patterns_directory: /loki/patterns
+  
+# Index gateway for better query performance  
+index_gateway:
+  mode: simple

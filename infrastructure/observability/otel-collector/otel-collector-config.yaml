@@ -18,36 +18,109 @@ processors:
     limit_mib: 512
     check_interval: 5
 
+  # Transform processor to parse JSON logs from Docker containers via Fluentd
+  transform/parse_json:
+    log_statements:
+      - context: log
+        statements:
+          # Parse the JSON log body
+          - set(attributes["parsed_log"], ParseJSON(body)) where IsString(body) and body != nil and Len(body) > 0
+
+          # Extract Scopes array and flatten all scope key-value pairs to root level
+          - set(attributes["scopes"], attributes["parsed_log"]["Scopes"]) where attributes["parsed_log"]["Scopes"] != nil
+
+          # Set OpenTelemetry standard trace fields for log-trace correlation
+          - set(trace_id, ConvertCase(attributes["scopes"][0]["TraceId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
+          - set(span_id, ConvertCase(attributes["scopes"][0]["SpanId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
+          
+          # Set Seq-expected trace correlation attributes
+          - set(attributes["traceId"], ConvertCase(attributes["scopes"][0]["TraceId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
+          - set(attributes["spanId"], ConvertCase(attributes["scopes"][0]["SpanId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
+          
+          # Set standard OpenTelemetry trace attributes for compatibility
+          - set(attributes["trace_id"], ConvertCase(attributes["scopes"][0]["TraceId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
+          - set(attributes["span_id"], ConvertCase(attributes["scopes"][0]["SpanId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
+
+          # merge Scopes[1] if present
+          - merge_maps(attributes, attributes["scopes"][1], "upsert") where attributes["scopes"] != nil and Len(attributes["scopes"]) > 1 and attributes["scopes"][1] != nil
+
+          # Extract main .NET log fields
+          - set(attributes["timestamp"], attributes["parsed_log"]["Timestamp"]) where attributes["parsed_log"]["Timestamp"] != nil
+          - set(attributes["level"], attributes["parsed_log"]["LogLevel"]) where attributes["parsed_log"]["LogLevel"] != nil
+          - set(attributes["logger"], attributes["parsed_log"]["Category"]) where attributes["parsed_log"]["Category"] != nil
+          - set(attributes["message"], attributes["parsed_log"]["Message"]) where attributes["parsed_log"]["Message"] != nil
+
+          # Map .NET log levels to standard severity
+          - set(severity_text, "TRACE") where attributes["level"] == "Trace"
+          - set(severity_text, "DEBUG") where attributes["level"] == "Debug"
+          - set(severity_text, "INFO") where attributes["level"] == "Information"
+          - set(severity_text, "WARN") where attributes["level"] == "Warning"
+          - set(severity_text, "ERROR") where attributes["level"] == "Error"
+          - set(severity_text, "FATAL") where attributes["level"] == "Critical"
+
+            # Set the body to the actual message for readability
+          - set(body, attributes["message"]) where attributes["message"] != nil
+
+          # Extract service name from fluent.tag to match OpenTelemetry service name
+          # For "ccp-1" -> "ccp", "validation-1" -> "validation"
+          - set(attributes["service_name"], Split(attributes["fluent.tag"], "-")[0]) where attributes["fluent.tag"] != nil and Len(attributes["fluent.tag"]) > 0
+          # Fallback to full tag if splitting fails
+          - set(attributes["service_name"], attributes["fluent.tag"]) where attributes["service_name"] == nil and attributes["fluent.tag"] != nil
+          - set(attributes["service_name"], "unknown") where attributes["service_name"] == nil
+
   # Log-specific processors for structured data
   attributes/logs:
     actions:
+      # Set service name from extracted service_name (e.g., "ccp", "worker")
       - key: service.name
         action: upsert
         from_attribute: service_name
       - key: service.instance.id
         action: upsert
-        from_attribute: instance_name
-      - key: trace_id
+        from_attribute: fluent.tag
+      - key: service.namespace
         action: upsert
-        from_attribute: trace_id
-      - key: span_id
+        value: 1.0.0
+      
+      # Add more Loki labels for better filtering (keep cardinality low)
+      - key: level
         action: upsert
-        from_attribute: span_id
-      - key: pipeline.id
+        from_attribute: level
+      - key: logger
+        action: upsert  
+        from_attribute: logger
+      - key: instance
         action: upsert
-        from_attribute: pipeline_id
-      - key: workitem.id
+        from_attribute: fluent.tag
+      - key: worker_name
         action: upsert
-        from_attribute: workitem_id
-      - key: worker.name
-        action: upsert
-        from_attribute: worker_name
+        from_attribute: WorkerName
+        
+      # Clean up temporary attributes
+      - key: scopes
+        action: delete
+      - key: parsed_log
+        action: delete
+      - key: service_name
+        action: delete
+      - key: container_name
+        action: delete
+      - key: container_id
+        action: delete
+      - key: source
+        action: delete
+      - key: log.source
+        action: delete
 
   resource/logs:
     attributes:
       - key: log.source
-        value: fluentd-docker
+        value: docker-fluentd
         action: upsert
+      # Ensure service.name is properly set for trace correlation
+      - key: service.name
+        action: upsert
+        from_attribute: service_name
 
 exporters:
   # Zipkin
@@ -66,9 +139,9 @@ exporters:
     headers:
       "X-Seq-ApiKey": "your-seq-api-key-here"
 
-  # Grafana Loki using HTTP endpoint
-  otlphttp/loki:
-    endpoint: "http://loki:3100/otlp/v1/logs"
+  # Loki (using OTLP HTTP)
+  otlphttp/logs:
+    endpoint: "http://loki:3100/otlp"
     tls:
       insecure: true
 
@@ -83,9 +156,9 @@ service:
       exporters: [zipkin, otlp/tempo, otlphttp/seq]
 
     logs:
-      receivers: [otlp, fluentforward]
-      processors: [memory_limiter, resource/logs, attributes/logs, batch]
-      exporters: [otlphttp/seq, otlphttp/loki, debug]
+      receivers: [fluentforward]
+      processors: [memory_limiter, transform/parse_json, attributes/logs, resource/logs, batch]
+      exporters: [otlphttp/seq, otlphttp/logs, debug]
 
     # metrics:
     #   receivers: [otlp]

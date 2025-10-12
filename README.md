@@ -37,11 +37,8 @@ This project includes a comprehensive observability stack with **5 different tra
 
 | Backend | URL | Port | Best For | Features |
 |---------|-----|------|----------|----------|
-| **🎯 Jaeger** | http://localhost:16686 | 16686 | Production tracing | Service maps, performance analysis |
 | **⚡ Zipkin** | http://localhost:9411 | 9411 | Lightweight tracing | Fast UI, low resources |
 | **📈 Grafana** | http://localhost:3000 | 3000 | Dashboards + Tempo | admin/admin, correlate metrics |
-| **🚀 SigNoz** | http://localhost:3301 | 3301 | All-in-one APM | Modern UI, alerts, metrics |
-| **🗺️ SkyWalking** | http://localhost:8080 | 8080 | Service topology | Code-level insights, Java-focused |
 | **📝 Seq** | http://localhost:5341 | 5341 | Structured logging | Event analysis, queries |
 
 ### 🎛️ **Monitoring Infrastructure**

@@ -72,8 +72,6 @@ public class WorkerHostedService : BackgroundService
                 // Add trace context to log scope for correlation
                 using var __ = _logger.BeginScope(new Dictionary<string, object>
                 {
-                    ["TraceId"] = activity?.TraceId.ToString() ?? string.Empty,
-                    ["SpanId"] = activity?.SpanId.ToString() ?? string.Empty,
                     ["PipelineId"] = workerMessage!.PipelineId.ToString(),
                     ["WorkitemId"] = workerMessage.Workitem.Id.ToString(),
                     ["RetryAttempt"] = workerMessage.Workitem.RetryAttempt.ToString(),

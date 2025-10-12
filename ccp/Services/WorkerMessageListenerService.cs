@@ -134,7 +134,6 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
         _logger.LogInformation("Worker {WorkerId} started processing for pipeline {PipelineId}", 
             workerMessage.WorkerId, workerMessage.PipelineId);
 
-
         await _pipelineStateService.PutStepAsync(workerMessage.PipelineId, workerMessage.Workitem, workerMessage.Step);
     }
 
