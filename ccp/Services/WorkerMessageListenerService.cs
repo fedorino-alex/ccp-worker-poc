@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using shared.Messages;
 using shared.Services;
+using System.Diagnostics;
 
 namespace ccp.Services;
 
@@ -15,6 +16,7 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
     private readonly ILogger<ControlPlaneMessagesListener> _logger;
 
     const string ccpControlMessagesQueue = "ccp-control-messages";
+    private static readonly ActivitySource ActivitySource = new("Ccp.WorkerMessageListener");
 
     public ControlPlaneMessagesListener(
         JsonSerializerOptions jsonOptions,
@@ -45,8 +47,18 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
             try
             {
                 var body = ea.Body.ToArray();
+
+                var activityContext = ExtractTraceContext(ea.BasicProperties.Headers);
+                using var activity = ActivitySource.StartActivity("ControlPlaneMessagesListener",
+                    ActivityKind.Consumer, activityContext);
+
                 var message = Encoding.UTF8.GetString(body);
                 var workerMessage = JsonSerializer.Deserialize<ControlPlaneMessage>(message, _jsonOptions);
+
+                activity?.SetTag("pipeline.id", workerMessage!.PipelineId.ToString());
+                activity?.SetTag("workitem.id", workerMessage!.Workitem.Id.ToString());
+                activity?.SetTag("step.name", workerMessage!.Step.Name);
+                activity?.SetTag("type", workerMessage!.MessageType.ToString());
 
                 if (workerMessage != null)
                 {
@@ -102,7 +114,7 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
             case ServiceMessageType.Started:
                 await HandleStartedMessage(workerMessage);
                 break;
- 
+
             case ServiceMessageType.Heartbeat:
                 await HandleHeartbeatMessage(workerMessage);
                 break;
@@ -121,6 +133,7 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
     {
         _logger.LogInformation("Worker {WorkerId} started processing for pipeline {PipelineId}", 
             workerMessage.WorkerId, workerMessage.PipelineId);
+
 
         await _pipelineStateService.PutStepAsync(workerMessage.PipelineId, workerMessage.Workitem, workerMessage.Step);
     }
@@ -146,6 +159,8 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
         _logger.LogDebug("Worker {WorkerId} heartbeat for pipeline {PipelineId}", 
             workerMessage.WorkerId, workerMessage.PipelineId);
 
+        Activity.Current?.SetTag("heartbeat", workerMessage.Timestamp.ToString("O"));
+
         // Heartbeat is already handled in ProcessWorkerMessage by updating the heartbeat timestamp
         await _pipelineStateService.PutHeartbeatAsync(workerMessage.PipelineId, workerMessage.Timestamp);
     }
@@ -166,4 +181,42 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
             await _rabbitMQInfrastructure.DisposeAsync();
         }
     }
+
+    private ActivityContext ExtractTraceContext(IDictionary<string, object?>? headers)
+    {
+        if (headers == null)
+            return default;
+
+        string? traceParent = null;
+        string? traceState = null;
+
+        // Extract traceparent header (W3C Trace Context)
+        if (headers.TryGetValue("traceparent", out var traceParentObj) && traceParentObj is byte[] traceParentBytes)
+        {
+            traceParent = Encoding.UTF8.GetString(traceParentBytes);
+        }
+
+        // Extract tracestate header (W3C Trace Context vendor-specific data)
+        if (headers.TryGetValue("tracestate", out var traceStateObj) && traceStateObj is byte[] traceStateBytes)
+        {
+            traceState = Encoding.UTF8.GetString(traceStateBytes);
+        }
+
+        // Parse both traceparent and tracestate together
+        if (!string.IsNullOrEmpty(traceParent))
+        {
+            if (ActivityContext.TryParse(traceParent, traceState, out var activityContext))
+            {
+                // Log trace context info for debugging
+                _logger.LogDebug("Extracted trace context - TraceId: {TraceId}, SpanId: {SpanId}{TraceState}",
+                    activityContext.TraceId, activityContext.SpanId,
+                    !string.IsNullOrEmpty(traceState) ? $", TraceState: {traceState}" : "");
+
+                return activityContext;
+            }
+        }
+
+        return default;
+    }
+
 }

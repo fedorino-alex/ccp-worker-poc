@@ -35,6 +35,11 @@ builder.Services.AddOpenTelemetry()
             ["deployment.environment"] = builder.Environment.EnvironmentName
         }))
     .WithTracing(tracing => tracing
+        .AddRedisInstrumentation(configure =>
+        {
+            configure.SetVerboseDatabaseStatements = true;
+            configure.EnrichActivityWithTimingEvents = true;
+        })
         .AddAspNetCoreInstrumentation(options =>
         {
             options.RecordException = true;

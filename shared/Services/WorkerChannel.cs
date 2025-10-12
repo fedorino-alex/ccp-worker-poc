@@ -36,7 +36,7 @@ public class WorkerChannel : IWorkerChannel
         // Create basic properties and inject trace context
         var properties = new BasicProperties();
         InjectTraceContext(properties);
-        
+
         await _rabbitMQInfrastructure.Channel.BasicPublishAsync(
             exchange: stepDlx,                        // use step name as exchange and queue name
             routingKey: stepDlx,                      // assuming step.Name is the queue name
@@ -48,7 +48,7 @@ public class WorkerChannel : IWorkerChannel
     public async Task SendAsync(WorkerMessage message)
     {
         var stepName = message.Step.Name;
-        
+
         // Ensure the exchange, queue, and binding exist
         await _rabbitMQInfrastructure.DeclareExchangeAsync(stepName, true);
         await _rabbitMQInfrastructure.DeclareQueueAsync(stepName);

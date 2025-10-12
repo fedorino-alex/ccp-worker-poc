@@ -66,9 +66,11 @@ exporters:
     headers:
       "X-Seq-ApiKey": "your-seq-api-key-here"
 
-  # Grafana Loki for logs
-  loki:
-    endpoint: "http://loki:3100/loki/api/v1/push"
+  # Grafana Loki using HTTP endpoint
+  otlphttp/loki:
+    endpoint: "http://loki:3100/otlp/v1/logs"
+    tls:
+      insecure: true
 
   # Console for debugging
   debug:
@@ -83,7 +85,7 @@ service:
     logs:
       receivers: [otlp, fluentforward]
       processors: [memory_limiter, resource/logs, attributes/logs, batch]
-      exporters: [otlphttp/seq, loki, debug]
+      exporters: [otlphttp/seq, otlphttp/loki, debug]
 
     # metrics:
     #   receivers: [otlp]

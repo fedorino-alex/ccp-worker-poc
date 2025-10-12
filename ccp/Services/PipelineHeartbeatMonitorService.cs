@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using ccp.Models;
 using shared.Messages;
@@ -13,6 +14,8 @@ public class PipelineHeartbeatMonitorService : BackgroundService
     private readonly TimeSpan _checkInterval;
     private readonly TimeSpan _heartbeatTimeout;
     private readonly ILogger<PipelineHeartbeatMonitorService> _logger;
+
+    private ActivitySource ActivitySource = new("Ccp.PipelineHeartbeatMonitor");
 
     public PipelineHeartbeatMonitorService(
         IPipelineStateService pipelineStateService,
@@ -38,24 +41,25 @@ public class PipelineHeartbeatMonitorService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            try
+            using (var activity = ActivitySource.StartActivity("MonitorPipelineHeartbeats"))
             {
-                await MonitorPipelineHeartbeats();
+                try
+                {
+                    await MonitorPipelineHeartbeats();
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogInformation("Pipeline Heartbeat Monitor Service is stopping due to cancellation...");
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                    _logger.LogError(ex, "Error in Pipeline Heartbeat Monitor Service");
+                }
+            }
 
-                await Task.Delay(_checkInterval, stoppingToken);
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInformation("Pipeline Heartbeat Monitor Service is stopping due to cancellation...");
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in Pipeline Heartbeat Monitor Service");
-                
-                // Wait a bit before retrying to avoid rapid fire errors
-                await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
-            }
+            await Task.Delay(_checkInterval, stoppingToken);
         }
     }
 
@@ -138,12 +142,17 @@ public class PipelineHeartbeatMonitorService : BackgroundService
 
         foreach (var pipelineId in stalePipelineIds)
         {
+            // run child activity for each pipeline
+            using var activity = ActivitySource.StartActivity("RestoreStalePipeline");
+            activity?.SetTag("pipeline.id", pipelineId.ToString());
+
             try
             {
                 await HandleStalePipeline(pipelineId);
             }
             catch (Exception ex)
             {
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 _logger.LogError(ex, "Error handling stale pipeline {PipelineId}", pipelineId);
             }
         }
@@ -161,6 +170,8 @@ public class PipelineHeartbeatMonitorService : BackgroundService
 
         var workitem = await _pipelineStateService.GetWorkitemAsync(pipelineId);
         workitem!.RestoreAttempt += 1;  // increase attempt count for restores
+
+        Activity.Current?.SetTag("restore.attempt", workitem.RestoreAttempt.ToString());
 
         // remove stale pipeline from monitoring heartbeat
         await _pipelineStateService.DeleteStepAsync(pipelineId, currentStep!);

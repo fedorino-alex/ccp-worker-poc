@@ -18,6 +18,13 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    depends_on:
+      - fluentd
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: redis
 
   # RabbitMQ service
   rabbitmq:
@@ -38,13 +45,20 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    depends_on:
+      - fluentd
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: rabbitmq
 
   # OpenTelemetry Collector
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+      - ./infrastructure/observability/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
       - "4317:4317"   # OTLP gRPC receiver
       - "4318:4318"   # OTLP HTTP receiver
@@ -60,17 +74,22 @@ services:
       - loki
     restart: unless-stopped
 
-  # Fluentd for collecting container logs
+  # Fluentd for collecting structured JSON logs via Docker logging driver
   fluentd:
-    image: fluent/fluentd:v1.16-debian-1
+    build:
+      context: ./infrastructure/observability/fluentd
+      dockerfile: Dockerfile
+    ports:
+      - "24224:24224"    # Fluentd forward protocol
+      - "24224:24224/udp" # Fluentd forward protocol UDP
     volumes:
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./fluentd.conf:/fluentd/etc/fluent.conf:ro
+      - ./infrastructure/observability/fluentd/fluentd.conf:/fluentd/etc/fluent.conf:ro
       - fluentd_logs:/var/log
-    depends_on:
-      otel-collector:
-        condition: service_started
+      - fluentd_buffers:/var/log/fluentd-buffers
+      - fluentd_pos:/var/log/fluentd-pos
+    # depends_on:
+    #   otel-collector:
+    #     condition: service_started
     networks:
       - app-network
     restart: unless-stopped
@@ -80,12 +99,17 @@ services:
     build:
       context: .
       dockerfile: ccp/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=ccp"
     depends_on:
       redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -98,18 +122,28 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: ccp-1
 
   # CCP Instance 2 - Secondary
   ccp-2:
     build:
       context: .
       dockerfile: ccp/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=ccp"
     depends_on:
       redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -122,18 +156,28 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: ccp-2
 
   # CCP Instance 3 - Tertiary
   ccp-3:
     build:
       context: .
       dockerfile: ccp/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=ccp"
     depends_on:
       redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -146,6 +190,11 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: ccp-3
 
   # nginx Load Balancer (ONLY access point)
   nginx:
@@ -153,23 +202,34 @@ services:
     ports:
       - "5000:80"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/routing/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - ccp-1
       - ccp-2
       - ccp-3
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: nginx
 
-  # # Worker service
+  # Worker service
   validation-1:
     build:
       context: .
       dockerfile: worker/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=worker"
+      - "worker.name=validation"
     depends_on:
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -182,15 +242,26 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: validation-1
 
   validation-2:
     build:
       context: .
       dockerfile: worker/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=worker"
+      - "worker.name=validation"
     depends_on:
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -203,15 +274,26 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: validation-2
 
   validation-3:
     build:
       context: .
       dockerfile: worker/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=worker"
+      - "worker.name=validation"
     depends_on:
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -224,15 +306,26 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: validation-3
 
   processing-4:
     build:
       context: .
       dockerfile: worker/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=worker"
+      - "worker.name=processing"
     depends_on:
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -245,15 +338,26 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: processing-4
 
   processing-5:
     build:
       context: .
       dockerfile: worker/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=worker"
+      - "worker.name=processing"
     depends_on:
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -266,15 +370,26 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: processing-5
 
   processing-6:
     build:
       context: .
       dockerfile: worker/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=worker"
+      - "worker.name=processing"
     depends_on:
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -287,15 +402,26 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: processing-6
 
   notification-7:
     build:
       context: .
       dockerfile: worker/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=worker"
+      - "worker.name=notification"
     depends_on:
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -308,15 +434,26 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: notification-7
 
   notification-8:
     build:
       context: .
       dockerfile: worker/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=worker"
+      - "worker.name=notification"
     depends_on:
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -329,15 +466,26 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: notification-8
 
   notification-9:
     build:
       context: .
       dockerfile: worker/Dockerfile
+    labels:
+      - "log.collect=true"
+      - "service.type=worker"
+      - "worker.name=notification"
     depends_on:
       rabbitmq:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      fluentd:
         condition: service_started
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -350,6 +498,11 @@ services:
       - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
     networks:
       - app-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: notification-9
 
   # Zipkin
   zipkin:
@@ -377,7 +530,7 @@ services:
     image: grafana/tempo:latest
     command: [ "-config.file=/etc/tempo.yaml" ]
     volumes:
-      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - ./infrastructure/observability/tempo/tempo.yaml:/etc/tempo.yaml:ro
       - tempo_data:/var/tempo
     ports:
       - "3200:3200"   # Tempo API
@@ -409,9 +562,12 @@ services:
       - GF_AUTH_DISABLE_LOGIN_FORM=false
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./infrastructure/observability/grafana/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
     networks:
       - app-network
+    depends_on:
+      - loki
+      - tempo
 
 volumes:
   redis_data:
@@ -423,6 +579,8 @@ volumes:
   skywalking_data:
   loki_data:
   fluentd_logs:
+  fluentd_buffers:
+  fluentd_pos:
 
 networks:
   app-network:

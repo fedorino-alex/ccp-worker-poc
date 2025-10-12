@@ -13,7 +13,7 @@ namespace worker.Services;
 public class WorkerHostedService : BackgroundService
 {
     private static readonly ActivitySource ActivitySource = new("Worker.HostedService");
-    
+
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ILogger<WorkerHostedService> _logger;
     private readonly WorkerOptions _options;
@@ -43,8 +43,8 @@ public class WorkerHostedService : BackgroundService
         await _client.DeclareQueueAsync(_options.Name);
         await _client.DeclareBindingAsync(_options.Name, _options.Name, _options.Name);
 
-        _logger.LogInformation("Worker '{WorkerName}' starting up at {Timestamp} with instance {InstanceName}", 
-            _options.Name, DateTimeOffset.Now, Environment.GetEnvironmentVariable("INSTANCE_NAME") ?? Environment.MachineName);
+        _logger.LogInformation("Worker '{WorkerName}' starting up with instance {InstanceName}",
+            _options.Name, Environment.GetEnvironmentVariable("INSTANCE_NAME") ?? Environment.MachineName);
 
         try
         {
@@ -70,19 +70,18 @@ public class WorkerHostedService : BackgroundService
                 activity?.SetTag("worker.name", _options.Name);
 
                 // Add trace context to log scope for correlation
-                using var logScope = _logger.BeginScope(new Dictionary<string, object>
+                using var __ = _logger.BeginScope(new Dictionary<string, object>
                 {
-                    ["TraceId"] = activity?.TraceId.ToString() ?? "unknown",
-                    ["SpanId"] = activity?.SpanId.ToString() ?? "unknown",
+                    ["TraceId"] = activity?.TraceId.ToString() ?? string.Empty,
+                    ["SpanId"] = activity?.SpanId.ToString() ?? string.Empty,
                     ["PipelineId"] = workerMessage!.PipelineId.ToString(),
                     ["WorkitemId"] = workerMessage.Workitem.Id.ToString(),
+                    ["RetryAttempt"] = workerMessage.Workitem.RetryAttempt.ToString(),
+                    ["RestoreAttempt"] = workerMessage.Workitem.RestoreAttempt.ToString(),
                     ["StepName"] = workerMessage.Step.Name,
                     ["WorkerName"] = _options.Name,
                     ["InstanceName"] = Environment.GetEnvironmentVariable("INSTANCE_NAME") ?? Environment.MachineName
                 });
-
-                _logger.LogInformation("Received workitem {WorkitemId} for pipeline {PipelineId} at step {StepName}", 
-                    workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
 
                 using var heartbeatCts = new CancellationTokenSource();
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, heartbeatCts.Token);
@@ -131,7 +130,7 @@ public class WorkerHostedService : BackgroundService
         // If there are more steps, send to the next worker
         if (workerMessage.Step.Next is not null)
         {
-            using var activity = ActivitySource.StartActivity("DispatchToNextStep");
+            using var activity = ActivitySource.StartActivity("DispatchToNextStep", ActivityKind.Producer);
             activity?.SetTag("next.step.name", workerMessage.Step.Next.Name);
             activity?.SetTag("pipeline.id", workerMessage.PipelineId.ToString());
             activity?.SetTag("workitem.id", workerMessage.Workitem.Id.ToString());
@@ -143,8 +142,7 @@ public class WorkerHostedService : BackgroundService
                 Step = workerMessage.Step.Next
             });
 
-            _logger.LogInformation("Forwarded workitem {WorkitemId} for pipeline {PipelineId} to next step {NextStep}",
-                workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Next.Name);
+            _logger.LogInformation("Workitem execution forwarded the next step {NextStep}", workerMessage.Step.Next.Name);
         }
     }
 
@@ -186,20 +184,7 @@ public class WorkerHostedService : BackgroundService
     private async Task HandleProcessingException(WorkerMessage workerMessage, Exception ex)
     {
         Activity.Current?.SetStatus(ActivityStatusCode.Error, ex.Message);
-
-        _logger.LogError(ex, "Error processing workitem {WorkitemId} for pipeline {PipelineId} on step {Step}",
-            workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
-
-        // Optionally, you can send a failure message to the control plane here
-        await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
-        {
-            PipelineId = workerMessage.PipelineId,
-            MessageType = ServiceMessageType.Finished,
-            Step = workerMessage.Step,
-            Workitem = workerMessage.Workitem,
-            WorkerId = _options.Name,
-            ErrorMessage = ex.Message
-        });
+        _logger.LogError(ex, "Error processing workitem");
 
         if (workerMessage.Workitem.RetryAttempt < 3)
         {
@@ -211,22 +196,13 @@ public class WorkerHostedService : BackgroundService
                 Step = workerMessage.Step
             });
 
-            _logger.LogInformation("Re-queued workitem {WorkitemId} for pipeline {PipelineId} to step {Step} (RetryAttempt={RetryAttempt})",
-                workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name, workerMessage.Workitem.RetryAttempt);
+            _logger.LogInformation("Re-queued workitem (RetryAttempt={RetryAttempt})", workerMessage.Workitem.RetryAttempt);
         }
         else
         {
-            _logger.LogWarning("Workitem {WorkitemId} for pipeline {PipelineId} reached max retry attempts and will not be re-queued",
-                workerMessage.Workitem.Id, workerMessage.PipelineId);
+            _logger.LogWarning("Workitem reached max retry attempts (3) and will not be re-queued");
 
-            await _workerChannel.SendAsync(new WorkerMessage
-            {
-                PipelineId = workerMessage.PipelineId,
-                Workitem = workerMessage.Workitem,
-                Step = workerMessage.Step
-            });
-
-            // TODO: complete pipeline with error
+            // TODO: Stop workitem execution, complete pipeline with error
         }
     }
 
@@ -241,23 +217,41 @@ public class WorkerHostedService : BackgroundService
             WorkerId = _options.Name
         });
 
-        _logger.LogInformation("Processing workitem {WorkitemId} for pipeline {PipelineId} on step {Step}",
-            workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
+        _logger.LogInformation("Processing of workitem has started");
 
-        await func();
-
-        _logger.LogInformation("Completed workitem {WorkitemId} for pipeline {PipelineId} on step {Step}",
-            workerMessage.Workitem.Id, workerMessage.PipelineId, workerMessage.Step.Name);
-
-
-        await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
+        try
         {
-            PipelineId = workerMessage.PipelineId,
-            MessageType = ServiceMessageType.Finished,
-            Step = workerMessage.Step,
-            Workitem = workerMessage.Workitem,
-            WorkerId = _options.Name
-        });
+            await func();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogInformation("Processing of workitem has failed");
+
+            await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
+            {
+                PipelineId = workerMessage.PipelineId,
+                MessageType = ServiceMessageType.Finished,
+                Step = workerMessage.Step,
+                Workitem = workerMessage.Workitem,
+                WorkerId = _options.Name,
+                ErrorMessage = ex.Message
+            });
+
+            throw;
+        }
+        finally
+        {
+            _logger.LogInformation("Processing of workitem has finished");
+
+            await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
+            {
+                PipelineId = workerMessage.PipelineId,
+                MessageType = ServiceMessageType.Finished,
+                Step = workerMessage.Step,
+                Workitem = workerMessage.Workitem,
+                WorkerId = _options.Name
+            });
+        }
     }
 
     private async Task ProcessWorkitem(WorkitemDto workitem, CancellationToken stoppingToken)
@@ -270,8 +264,6 @@ public class WorkerHostedService : BackgroundService
         var begin = DateTime.UtcNow;
         var end = begin + processingTime;
 
-        _logger.LogInformation("{Timestamp}: Processing workitem {WorkitemId} for {ProcessingTime}", DateTimeOffset.Now, workitem.Id, processingTime);
-
         while (DateTime.UtcNow < end && !stoppingToken.IsCancellationRequested)
         {
             await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); // simulate doing some work
@@ -281,19 +273,19 @@ public class WorkerHostedService : BackgroundService
 
             if (elapsed.TotalSeconds > 150)
             {
-                throw new Exception($"{DateTimeOffset.Now}: Workitem has simulated processing error.");
+                throw new Exception("Workitem has simulated processing error.");
             }
 
-            _logger.LogInformation("{Timestamp}: Workitem {WorkitemId} progress: {Progress}%", DateTimeOffset.Now, workitem.Id, progress);
+            _logger.LogInformation("Still running... Progress: {Progress}%", progress);
         }
-
-        _logger.LogInformation("{Timestamp}: Completed processing workitem {WorkitemId}", DateTimeOffset.Now, workitem.Id);
     }
 
     private async Task PublishHeartbeat(Guid pipelineId, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            _logger.LogDebug("Sending heartbeat");
+
             await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
             {
                 PipelineId = pipelineId,
@@ -306,23 +298,42 @@ public class WorkerHostedService : BackgroundService
             }
             catch (TaskCanceledException)
             {
-                // Task was canceled, exit the loop
+                _logger.LogDebug("Stopping heartbeat");
                 break;
             }
         }
     }
 
-    private static ActivityContext ExtractTraceContext(IDictionary<string, object?>? headers)
+    private ActivityContext ExtractTraceContext(IDictionary<string, object?>? headers)
     {
         if (headers == null)
             return default;
 
+        string? traceParent = null;
+        string? traceState = null;
+
         // Extract traceparent header (W3C Trace Context)
         if (headers.TryGetValue("traceparent", out var traceParentObj) && traceParentObj is byte[] traceParentBytes)
         {
-            var traceParent = Encoding.UTF8.GetString(traceParentBytes);
-            if (ActivityContext.TryParse(traceParent, null, out var activityContext))
+            traceParent = Encoding.UTF8.GetString(traceParentBytes);
+        }
+
+        // Extract tracestate header (W3C Trace Context vendor-specific data)
+        if (headers.TryGetValue("tracestate", out var traceStateObj) && traceStateObj is byte[] traceStateBytes)
+        {
+            traceState = Encoding.UTF8.GetString(traceStateBytes);
+        }
+
+        // Parse both traceparent and tracestate together
+        if (!string.IsNullOrEmpty(traceParent))
+        {
+            if (ActivityContext.TryParse(traceParent, traceState, out var activityContext))
             {
+                // Log trace context info for debugging
+                _logger.LogDebug("Extracted trace context - TraceId: {TraceId}, SpanId: {SpanId}{TraceState}",
+                    activityContext.TraceId, activityContext.SpanId,
+                    !string.IsNullOrEmpty(traceState) ? $", TraceState: {traceState}" : "");
+
                 return activityContext;
             }
         }
