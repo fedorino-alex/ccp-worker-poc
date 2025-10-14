@@ -29,17 +29,9 @@ processors:
           # Extract Scopes array and flatten all scope key-value pairs to root level
           - set(attributes["scopes"], attributes["parsed_log"]["Scopes"]) where attributes["parsed_log"]["Scopes"] != nil
 
-          # Set OpenTelemetry standard trace fields for log-trace correlation
-          - set(trace_id, ConvertCase(attributes["scopes"][0]["TraceId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
-          - set(span_id, ConvertCase(attributes["scopes"][0]["SpanId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
-          
-          # Set Seq-expected trace correlation attributes
-          - set(attributes["traceId"], ConvertCase(attributes["scopes"][0]["TraceId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
-          - set(attributes["spanId"], ConvertCase(attributes["scopes"][0]["SpanId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
-          
-          # Set standard OpenTelemetry trace attributes for compatibility
-          - set(attributes["trace_id"], ConvertCase(attributes["scopes"][0]["TraceId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
-          - set(attributes["span_id"], ConvertCase(attributes["scopes"][0]["SpanId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
+          # # Set OpenTelemetry standard trace fields for log-trace correlation
+          - set(trace_id.string, ConvertCase(attributes["scopes"][0]["TraceId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
+          - set(span_id.string, ConvertCase(attributes["scopes"][0]["SpanId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
 
           # merge Scopes[1] if present
           - merge_maps(attributes, attributes["scopes"][1], "upsert") where attributes["scopes"] != nil and Len(attributes["scopes"]) > 1 and attributes["scopes"][1] != nil
@@ -121,6 +113,21 @@ processors:
       - key: service.name
         action: upsert
         from_attribute: service_name
+      # Aspire Dashboard requires service.instance.id as resource attribute
+      - key: service.instance.id
+        action: upsert
+        from_attribute: fluent.tag
+      # Add service.version for completeness
+      - key: service.version
+        value: 1.0.0
+        action: upsert
+      # Add trace correlation fields as resource attributes for Aspire Dashboard
+      - key: trace_id
+        action: upsert
+        from_attribute: trace_id
+      - key: span_id
+        action: upsert
+        from_attribute: span_id
 
 exporters:
   # Zipkin
@@ -145,20 +152,30 @@ exporters:
     tls:
       insecure: true
 
+  # .NET Aspire Dashboard (OTLP gRPC)
+  otlp/aspire:
+    endpoint: "http://aspire-dashboard:18889"
+    tls:
+      insecure: true
+
   # Console for debugging
   debug:
 
 service:
+  # telemetry:
+  #   logs:
+  #     level: debug
+
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [zipkin, otlp/tempo, otlphttp/seq]
+      exporters: [zipkin, otlp/tempo, otlphttp/seq, otlp/aspire]
 
     logs:
       receivers: [fluentforward]
       processors: [memory_limiter, transform/parse_json, attributes/logs, resource/logs, batch]
-      exporters: [otlphttp/seq, otlphttp/logs, debug]
+      exporters: [otlphttp/seq, otlphttp/logs]
 
     # metrics:
     #   receivers: [otlp]

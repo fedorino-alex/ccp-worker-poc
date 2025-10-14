@@ -506,6 +506,18 @@ services:
       - loki
       - tempo
 
+  # .NET Aspire Dashboard for observability
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:8.0
+    environment:
+      - DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=true
+    ports:
+      - "18888:18888"  # Dashboard UI
+      - "18889:18889"  # OTLP endpoint
+    networks:
+      - app-network
+    restart: unless-stopped
+
 volumes:
   redis_data:
   rabbitmq_data:
