@@ -54,9 +54,7 @@ services:
       - app-network
     depends_on:
       - zipkin
-      - tempo
       - seq
-      - loki
     restart: unless-stopped
 
   # CCP Instance 1 - Primary
@@ -169,7 +167,7 @@ services:
     networks:
       - app-network
 
-  # Worker service
+  # # Worker service
   validation-1:
     build:
       context: .
@@ -200,65 +198,65 @@ services:
         fluentd-address: localhost:8006
         tag: validation-1
 
-  validation-2:
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
-    labels:
-      - "log.collect=true"
-      - "service.type=worker"
-      - "worker.name=validation"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      otel-collector:
-        condition: service_started
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - RabbitMQ__HostName=rabbitmq
-      - RabbitMQ__Port=5672
-      - RabbitMQ__UserName=guest
-      - RabbitMQ__Password=guest
-      - Worker__Name=validation
-      - INSTANCE_NAME=worker-validation-2
-      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
-    networks:
-      - app-network
-    logging:
-      driver: fluentd
-      options:
-        fluentd-address: localhost:8006
-        tag: validation-2
+  # validation-2:
+  #   build:
+  #     context: .
+  #     dockerfile: worker/Dockerfile
+  #   labels:
+  #     - "log.collect=true"
+  #     - "service.type=worker"
+  #     - "worker.name=validation"
+  #   depends_on:
+  #     rabbitmq:
+  #       condition: service_healthy
+  #     otel-collector:
+  #       condition: service_started
+  #   environment:
+  #     - ASPNETCORE_ENVIRONMENT=Development
+  #     - RabbitMQ__HostName=rabbitmq
+  #     - RabbitMQ__Port=5672
+  #     - RabbitMQ__UserName=guest
+  #     - RabbitMQ__Password=guest
+  #     - Worker__Name=validation
+  #     - INSTANCE_NAME=worker-validation-2
+  #     - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+  #   networks:
+  #     - app-network
+  #   logging:
+  #     driver: fluentd
+  #     options:
+  #       fluentd-address: localhost:8006
+  #       tag: validation-2
 
-  validation-3:
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
-    labels:
-      - "log.collect=true"
-      - "service.type=worker"
-      - "worker.name=validation"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      otel-collector:
-        condition: service_started
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - RabbitMQ__HostName=rabbitmq
-      - RabbitMQ__Port=5672
-      - RabbitMQ__UserName=guest
-      - RabbitMQ__Password=guest
-      - Worker__Name=validation
-      - INSTANCE_NAME=worker-validation-3
-      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
-    networks:
-      - app-network
-    logging:
-      driver: fluentd
-      options:
-        fluentd-address: localhost:8006
-        tag: validation-3
+  # validation-3:
+  #   build:
+  #     context: .
+  #     dockerfile: worker/Dockerfile
+  #   labels:
+  #     - "log.collect=true"
+  #     - "service.type=worker"
+  #     - "worker.name=validation"
+  #   depends_on:
+  #     rabbitmq:
+  #       condition: service_healthy
+  #     otel-collector:
+  #       condition: service_started
+  #   environment:
+  #     - ASPNETCORE_ENVIRONMENT=Development
+  #     - RabbitMQ__HostName=rabbitmq
+  #     - RabbitMQ__Port=5672
+  #     - RabbitMQ__UserName=guest
+  #     - RabbitMQ__Password=guest
+  #     - Worker__Name=validation
+  #     - INSTANCE_NAME=worker-validation-3
+  #     - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+  #   networks:
+  #     - app-network
+  #   logging:
+  #     driver: fluentd
+  #     options:
+  #       fluentd-address: localhost:8006
+  #       tag: validation-3
 
   processing-4:
     build:
@@ -290,65 +288,65 @@ services:
         fluentd-address: localhost:8006
         tag: processing-4
 
-  processing-5:
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
-    labels:
-      - "log.collect=true"
-      - "service.type=worker"
-      - "worker.name=processing"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      otel-collector:
-        condition: service_started
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - RabbitMQ__HostName=rabbitmq
-      - RabbitMQ__Port=5672
-      - RabbitMQ__UserName=guest
-      - RabbitMQ__Password=guest
-      - Worker__Name=processing
-      - INSTANCE_NAME=worker-processing-2
-      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
-    networks:
-      - app-network
-    logging:
-      driver: fluentd
-      options:
-        fluentd-address: localhost:8006
-        tag: processing-5
+  # processing-5:
+  #   build:
+  #     context: .
+  #     dockerfile: worker/Dockerfile
+  #   labels:
+  #     - "log.collect=true"
+  #     - "service.type=worker"
+  #     - "worker.name=processing"
+  #   depends_on:
+  #     rabbitmq:
+  #       condition: service_healthy
+  #     otel-collector:
+  #       condition: service_started
+  #   environment:
+  #     - ASPNETCORE_ENVIRONMENT=Development
+  #     - RabbitMQ__HostName=rabbitmq
+  #     - RabbitMQ__Port=5672
+  #     - RabbitMQ__UserName=guest
+  #     - RabbitMQ__Password=guest
+  #     - Worker__Name=processing
+  #     - INSTANCE_NAME=worker-processing-2
+  #     - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+  #   networks:
+  #     - app-network
+  #   logging:
+  #     driver: fluentd
+  #     options:
+  #       fluentd-address: localhost:8006
+  #       tag: processing-5
 
-  processing-6:
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
-    labels:
-      - "log.collect=true"
-      - "service.type=worker"
-      - "worker.name=processing"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      otel-collector:
-        condition: service_started
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - RabbitMQ__HostName=rabbitmq
-      - RabbitMQ__Port=5672
-      - RabbitMQ__UserName=guest
-      - RabbitMQ__Password=guest
-      - Worker__Name=processing
-      - INSTANCE_NAME=worker-processing-3
-      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
-    networks:
-      - app-network
-    logging:
-      driver: fluentd
-      options:
-        fluentd-address: localhost:8006
-        tag: processing-6
+  # processing-6:
+  #   build:
+  #     context: .
+  #     dockerfile: worker/Dockerfile
+  #   labels:
+  #     - "log.collect=true"
+  #     - "service.type=worker"
+  #     - "worker.name=processing"
+  #   depends_on:
+  #     rabbitmq:
+  #       condition: service_healthy
+  #     otel-collector:
+  #       condition: service_started
+  #   environment:
+  #     - ASPNETCORE_ENVIRONMENT=Development
+  #     - RabbitMQ__HostName=rabbitmq
+  #     - RabbitMQ__Port=5672
+  #     - RabbitMQ__UserName=guest
+  #     - RabbitMQ__Password=guest
+  #     - Worker__Name=processing
+  #     - INSTANCE_NAME=worker-processing-3
+  #     - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+  #   networks:
+  #     - app-network
+  #   logging:
+  #     driver: fluentd
+  #     options:
+  #       fluentd-address: localhost:8006
+  #       tag: processing-6
 
   notification-7:
     build:
@@ -380,65 +378,65 @@ services:
         fluentd-address: localhost:8006
         tag: notification-7
 
-  notification-8:
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
-    labels:
-      - "log.collect=true"
-      - "service.type=worker"
-      - "worker.name=notification"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      otel-collector:
-        condition: service_started
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - RabbitMQ__HostName=rabbitmq
-      - RabbitMQ__Port=5672
-      - RabbitMQ__UserName=guest
-      - RabbitMQ__Password=guest
-      - Worker__Name=notification
-      - INSTANCE_NAME=worker-notification-2
-      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
-    networks:
-      - app-network
-    logging:
-      driver: fluentd
-      options:
-        fluentd-address: localhost:8006
-        tag: notification-8
+  # notification-8:
+  #   build:
+  #     context: .
+  #     dockerfile: worker/Dockerfile
+  #   labels:
+  #     - "log.collect=true"
+  #     - "service.type=worker"
+  #     - "worker.name=notification"
+  #   depends_on:
+  #     rabbitmq:
+  #       condition: service_healthy
+  #     otel-collector:
+  #       condition: service_started
+  #   environment:
+  #     - ASPNETCORE_ENVIRONMENT=Development
+  #     - RabbitMQ__HostName=rabbitmq
+  #     - RabbitMQ__Port=5672
+  #     - RabbitMQ__UserName=guest
+  #     - RabbitMQ__Password=guest
+  #     - Worker__Name=notification
+  #     - INSTANCE_NAME=worker-notification-2
+  #     - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+  #   networks:
+  #     - app-network
+  #   logging:
+  #     driver: fluentd
+  #     options:
+  #       fluentd-address: localhost:8006
+  #       tag: notification-8
 
-  notification-9:
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
-    labels:
-      - "log.collect=true"
-      - "service.type=worker"
-      - "worker.name=notification"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      otel-collector:
-        condition: service_started
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - RabbitMQ__HostName=rabbitmq
-      - RabbitMQ__Port=5672
-      - RabbitMQ__UserName=guest
-      - RabbitMQ__Password=guest
-      - Worker__Name=notification
-      - INSTANCE_NAME=worker-notification-3
-      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
-    networks:
-      - app-network
-    logging:
-      driver: fluentd
-      options:
-        fluentd-address: localhost:8006
-        tag: notification-9
+  # notification-9:
+  #   build:
+  #     context: .
+  #     dockerfile: worker/Dockerfile
+  #   labels:
+  #     - "log.collect=true"
+  #     - "service.type=worker"
+  #     - "worker.name=notification"
+  #   depends_on:
+  #     rabbitmq:
+  #       condition: service_healthy
+  #     otel-collector:
+  #       condition: service_started
+  #   environment:
+  #     - ASPNETCORE_ENVIRONMENT=Development
+  #     - RabbitMQ__HostName=rabbitmq
+  #     - RabbitMQ__Port=5672
+  #     - RabbitMQ__UserName=guest
+  #     - RabbitMQ__Password=guest
+  #     - Worker__Name=notification
+  #     - INSTANCE_NAME=worker-notification-3
+  #     - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+  #   networks:
+  #     - app-network
+  #   logging:
+  #     driver: fluentd
+  #     options:
+  #       fluentd-address: localhost:8006
+  #       tag: notification-9
 
   # Zipkin
   zipkin:
@@ -461,62 +459,62 @@ services:
     networks:
       - app-network
 
-  # Grafana Tempo
-  tempo:
-    image: grafana/tempo:latest
-    command: [ "-config.file=/etc/tempo.yaml" ]
-    volumes:
-      - ./infrastructure/observability/tempo/tempo.yaml:/etc/tempo.yaml:ro
-      - tempo_data:/var/tempo
-    ports:
-      - "3200:3200"   # Tempo API
-    networks:
-      - app-network
-    user: "0:0"  # Run as root to avoid permission issues
+  # # Grafana Tempo
+  # tempo:
+  #   image: grafana/tempo:latest
+  #   command: [ "-config.file=/etc/tempo.yaml" ]
+  #   volumes:
+  #     - ./infrastructure/observability/tempo/tempo.yaml:/etc/tempo.yaml:ro
+  #     - tempo_data:/var/tempo
+  #   ports:
+  #     - "3200:3200"   # Tempo API
+  #   networks:
+  #     - app-network
+  #   user: "0:0"  # Run as root to avoid permission issues
 
-  # Grafana Loki for logs
-  loki:
-    image: grafana/loki:latest
-    command: -config.file=/etc/loki/loki-config.yaml
-    ports:
-      - "3100:3100"   # Loki API
-    volumes:
-      - loki_data:/loki
-      - ./infrastructure/observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
-    networks:
-      - app-network
-    restart: unless-stopped
+  # # Grafana Loki for logs
+  # loki:
+  #   image: grafana/loki:latest
+  #   command: -config.file=/etc/loki/loki-config.yaml
+  #   ports:
+  #     - "3100:3100"   # Loki API
+  #   volumes:
+  #     - loki_data:/loki
+  #     - ./infrastructure/observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+  #   networks:
+  #     - app-network
+  #   restart: unless-stopped
 
-  # Grafana (for Tempo UI)
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"   # Grafana UI
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
-      - GF_AUTH_DISABLE_LOGIN_FORM=false
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./infrastructure/observability/grafana/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
-    networks:
-      - app-network
-    depends_on:
-      - loki
-      - tempo
+  # # Grafana (for Tempo UI)
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   ports:
+  #     - "3000:3000"   # Grafana UI
+  #   environment:
+  #     - GF_SECURITY_ADMIN_PASSWORD=admin
+  #     - GF_AUTH_ANONYMOUS_ENABLED=true
+  #     - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+  #     - GF_AUTH_DISABLE_LOGIN_FORM=false
+  #   volumes:
+  #     - grafana_data:/var/lib/grafana
+  #     - ./infrastructure/observability/grafana/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+  #   networks:
+  #     - app-network
+  #   depends_on:
+  #     - loki
+  #     - tempo
 
-  # .NET Aspire Dashboard for observability
-  aspire-dashboard:
-    image: mcr.microsoft.com/dotnet/aspire-dashboard:8.0
-    environment:
-      - DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=true
-    ports:
-      - "18888:18888"  # Dashboard UI
-      - "18889:18889"  # OTLP endpoint
-    networks:
-      - app-network
-    restart: unless-stopped
+  # # .NET Aspire Dashboard for observability
+  # aspire-dashboard:
+  #   image: mcr.microsoft.com/dotnet/aspire-dashboard:8.0
+  #   environment:
+  #     - DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=true
+  #   ports:
+  #     - "18888:18888"  # Dashboard UI
+  #     - "18889:18889"  # OTLP endpoint
+  #   networks:
+  #     - app-network
+  #   restart: unless-stopped
 
 volumes:
   redis_data:

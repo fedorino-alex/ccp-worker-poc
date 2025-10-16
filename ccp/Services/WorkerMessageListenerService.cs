@@ -50,19 +50,27 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
 
                 var activityContext = ExtractTraceContext(ea.BasicProperties.Headers);
                 using var activity = ActivitySource.StartActivity("ControlPlaneMessagesListener",
-                    ActivityKind.Consumer, activityContext);
+                     ActivityKind.Consumer, activityContext);
 
                 var message = Encoding.UTF8.GetString(body);
                 var workerMessage = JsonSerializer.Deserialize<ControlPlaneMessage>(message, _jsonOptions);
 
-                activity?.SetTag("pipeline.id", workerMessage!.PipelineId.ToString());
-                activity?.SetTag("workitem.id", workerMessage!.Workitem.Id.ToString());
-                activity?.SetTag("step.name", workerMessage!.Step.Name);
-                activity?.SetTag("type", workerMessage!.MessageType.ToString());
+                using var _ = _logger.BeginScope(new Dictionary<string, object?>
+                {
+                    ["PipelineId"] = workerMessage?.PipelineId,
+                    ["WorkitemId"] = workerMessage?.Workitem?.Id,
+                    ["StepName"] = workerMessage?.Step?.Name,
+                    ["MessageType"] = workerMessage?.MessageType.ToString()
+                });
+
+                // activity?.SetTag("pipeline.id", workerMessage!.PipelineId.ToString());
+                // activity?.SetTag("workitem.id", workerMessage!.Workitem.Id.ToString());
+                // activity?.SetTag("step.name", workerMessage!.Step.Name);
+                // activity?.SetTag("type", workerMessage!.MessageType.ToString());
 
                 if (workerMessage != null)
                 {
-                    await ProcessWorkerMessage(workerMessage);
+                    await ProcessWorkerMessage(workerMessage, activity);
 
                     // Acknowledge the message
                     await channel.BasicAckAsync(ea.DeliveryTag, false);
@@ -104,10 +112,9 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
         }
     }
 
-    private async Task ProcessWorkerMessage(ControlPlaneMessage workerMessage)
+    private async Task ProcessWorkerMessage(ControlPlaneMessage workerMessage, Activity? activity = null)
     {
-        _logger.LogInformation("Processing worker message: PipelineId={PipelineId}, MessageType={MessageType}, WorkerId={WorkerId}",
-            workerMessage.PipelineId, workerMessage.MessageType, workerMessage.WorkerId);
+        _logger.LogInformation("Processing worker message");
 
         switch (workerMessage.MessageType)
         {
@@ -116,7 +123,7 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
                 break;
 
             case ServiceMessageType.Heartbeat:
-                await HandleHeartbeatMessage(workerMessage);
+                await HandleHeartbeatMessage(workerMessage, activity);
                 break;
 
             case ServiceMessageType.Finished:
@@ -153,12 +160,12 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
         await _pipelineStateService.DeleteStepAsync(workerMessage.PipelineId, workerMessage.Step);
     }
 
-    private async Task HandleHeartbeatMessage(ControlPlaneMessage workerMessage)
+    private async Task HandleHeartbeatMessage(ControlPlaneMessage workerMessage, Activity? activity = null)
     {
         _logger.LogDebug("Worker {WorkerId} heartbeat for pipeline {PipelineId}", 
             workerMessage.WorkerId, workerMessage.PipelineId);
 
-        Activity.Current?.SetTag("heartbeat", workerMessage.Timestamp.ToString("O"));
+        activity?.SetTag("heartbeat", workerMessage.Timestamp.ToString("O"));
 
         // Heartbeat is already handled in ProcessWorkerMessage by updating the heartbeat timestamp
         await _pipelineStateService.PutHeartbeatAsync(workerMessage.PipelineId, workerMessage.Timestamp);

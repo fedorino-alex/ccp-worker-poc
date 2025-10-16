@@ -29,18 +29,24 @@ processors:
           # Extract Scopes array and flatten all scope key-value pairs to root level
           - set(attributes["scopes"], attributes["parsed_log"]["Scopes"]) where attributes["parsed_log"]["Scopes"] != nil
 
-          # # Set OpenTelemetry standard trace fields for log-trace correlation
+          # Extract trace_id and span_id from Scopes[0] if present
           - set(trace_id.string, ConvertCase(attributes["scopes"][0]["TraceId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
           - set(span_id.string, ConvertCase(attributes["scopes"][0]["SpanId"], "lower")) where attributes["scopes"] != nil and Len(attributes["scopes"]) > 0
 
-          # merge Scopes[1] if present
+          # merge other scopes if present to attributes collection
           - merge_maps(attributes, attributes["scopes"][1], "upsert") where attributes["scopes"] != nil and Len(attributes["scopes"]) > 1 and attributes["scopes"][1] != nil
+          - merge_maps(attributes, attributes["scopes"][2], "upsert") where attributes["scopes"] != nil and Len(attributes["scopes"]) > 2 and attributes["scopes"][2] != nil
+          - merge_maps(attributes, attributes["scopes"][3], "upsert") where attributes["scopes"] != nil and Len(attributes["scopes"]) > 3 and attributes["scopes"][3] != nil
+          - merge_maps(attributes, attributes["scopes"][4], "upsert") where attributes["scopes"] != nil and Len(attributes["scopes"]) > 4 and attributes["scopes"][4] != nil
+          - merge_maps(attributes, attributes["scopes"][5], "upsert") where attributes["scopes"] != nil and Len(attributes["scopes"]) > 5 and attributes["scopes"][5] != nil
 
           # Extract main .NET log fields
-          - set(attributes["timestamp"], attributes["parsed_log"]["Timestamp"]) where attributes["parsed_log"]["Timestamp"] != nil
           - set(attributes["level"], attributes["parsed_log"]["LogLevel"]) where attributes["parsed_log"]["LogLevel"] != nil
           - set(attributes["logger"], attributes["parsed_log"]["Category"]) where attributes["parsed_log"]["Category"] != nil
           - set(attributes["message"], attributes["parsed_log"]["Message"]) where attributes["parsed_log"]["Message"] != nil
+
+          # Set the actual log record timestamp from the .NET timestamp
+          - set(time, Time(attributes["parsed_log"]["Timestamp"], "2006-01-02T15:04:05.000Z")) where attributes["parsed_log"]["Timestamp"] != nil
 
           # Map .NET log levels to standard severity
           - set(severity_text, "TRACE") where attributes["level"] == "Trace"
@@ -50,45 +56,39 @@ processors:
           - set(severity_text, "ERROR") where attributes["level"] == "Error"
           - set(severity_text, "FATAL") where attributes["level"] == "Critical"
 
+          - set(attributes["service_name"], attributes["fluent.tag"]) where attributes["fluent.tag"] != nil and Len(attributes["fluent.tag"]) > 0
+
             # Set the body to the actual message for readability
           - set(body, attributes["message"]) where attributes["message"] != nil
-
-          # Extract service name from fluent.tag to match OpenTelemetry service name
-          # For "ccp-1" -> "ccp", "validation-1" -> "validation"
-          - set(attributes["service_name"], Split(attributes["fluent.tag"], "-")[0]) where attributes["fluent.tag"] != nil and Len(attributes["fluent.tag"]) > 0
-          # Fallback to full tag if splitting fails
-          - set(attributes["service_name"], attributes["fluent.tag"]) where attributes["service_name"] == nil and attributes["fluent.tag"] != nil
-          - set(attributes["service_name"], "unknown") where attributes["service_name"] == nil
 
   # Log-specific processors for structured data
   attributes/logs:
     actions:
       # Set service name from extracted service_name (e.g., "ccp", "worker")
-      - key: service.name
-        action: upsert
-        from_attribute: service_name
-      - key: service.instance.id
-        action: upsert
-        from_attribute: fluent.tag
-      - key: service.namespace
-        action: upsert
-        value: 1.0.0
+      # - key: service.name
+      #   action: upsert
+      #   from_attribute: service_name
+      # - key: service.instance.id
+      #   action: upsert
+      #   from_attribute: fluent.tag
       
       # Add more Loki labels for better filtering (keep cardinality low)
       - key: level
         action: upsert
         from_attribute: level
-      - key: logger
-        action: upsert  
-        from_attribute: logger
-      - key: instance
-        action: upsert
-        from_attribute: fluent.tag
+      # - key: logger
+      #   action: upsert  
+      #   from_attribute: logger
+      # - key: instance
+      #   action: upsert
+      #   from_attribute: fluent.tag
       - key: worker_name
         action: upsert
         from_attribute: WorkerName
         
       # Clean up temporary attributes
+      - key: fluent.tag
+        action: delete
       - key: scopes
         action: delete
       - key: parsed_log
@@ -104,41 +104,16 @@ processors:
       - key: log.source
         action: delete
 
-  resource/logs:
-    attributes:
-      - key: log.source
-        value: docker-fluentd
-        action: upsert
-      # Ensure service.name is properly set for trace correlation
-      - key: service.name
-        action: upsert
-        from_attribute: service_name
-      # Aspire Dashboard requires service.instance.id as resource attribute
-      - key: service.instance.id
-        action: upsert
-        from_attribute: fluent.tag
-      # Add service.version for completeness
-      - key: service.version
-        value: 1.0.0
-        action: upsert
-      # Add trace correlation fields as resource attributes for Aspire Dashboard
-      - key: trace_id
-        action: upsert
-        from_attribute: trace_id
-      - key: span_id
-        action: upsert
-        from_attribute: span_id
-
 exporters:
   # Zipkin
   zipkin:
     endpoint: "http://zipkin:9411/api/v2/spans"
 
-  # Grafana Tempo
-  otlp/tempo:
-    endpoint: "http://tempo:4317"
-    tls:
-      insecure: true
+  # # Grafana Tempo
+  # otlp/tempo:
+  #   endpoint: "http://tempo:4317"
+  #   tls:
+  #     insecure: true
 
   # Seq (using OTLP HTTP)
   otlphttp/seq:
@@ -146,17 +121,17 @@ exporters:
     headers:
       "X-Seq-ApiKey": "your-seq-api-key-here"
 
-  # Loki (using OTLP HTTP)
-  otlphttp/logs:
-    endpoint: "http://loki:3100/otlp"
-    tls:
-      insecure: true
+  # # Loki (using OTLP HTTP)
+  # otlphttp/logs:
+  #   endpoint: "http://loki:3100/otlp"
+  #   tls:
+  #     insecure: true
 
-  # .NET Aspire Dashboard (OTLP gRPC)
-  otlp/aspire:
-    endpoint: "http://aspire-dashboard:18889"
-    tls:
-      insecure: true
+  # # .NET Aspire Dashboard (OTLP gRPC)
+  # otlp/aspire:
+  #   endpoint: "http://aspire-dashboard:18889"
+  #   tls:
+  #     insecure: true
 
   # Console for debugging
   debug:
@@ -170,12 +145,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [zipkin, otlp/tempo, otlphttp/seq, otlp/aspire]
+      exporters: [zipkin, otlphttp/seq]
 
     logs:
       receivers: [fluentforward]
-      processors: [memory_limiter, transform/parse_json, attributes/logs, resource/logs, batch]
-      exporters: [otlphttp/seq, otlphttp/logs]
+      processors: [memory_limiter, transform/parse_json, attributes/logs, batch]
+      exporters: [otlphttp/seq]
 
     # metrics:
     #   receivers: [otlp]

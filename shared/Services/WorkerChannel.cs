@@ -8,8 +8,8 @@ namespace shared.Services;
 
 public interface IWorkerChannel
 {
-    Task SendAsync(WorkerMessage message);
-    Task DeadLetterAsync(WorkerMessage message);
+    Task SendAsync(WorkerMessage message, Activity? activity);
+    Task DeadLetterAsync(WorkerMessage message, Activity? activity);
 }
 
 public class WorkerChannel : IWorkerChannel
@@ -23,7 +23,7 @@ public class WorkerChannel : IWorkerChannel
         _jsonOptions = jsonOptions;
     }
 
-    public async Task DeadLetterAsync(WorkerMessage message)
+    public async Task DeadLetterAsync(WorkerMessage message, Activity? activity)
     {
         var stepDlx = $"{message.Step.Name}-dlx";
 
@@ -35,7 +35,7 @@ public class WorkerChannel : IWorkerChannel
         
         // Create basic properties and inject trace context
         var properties = new BasicProperties();
-        InjectTraceContext(properties);
+        InjectTraceContext(properties, activity);
 
         await _rabbitMQInfrastructure.Channel.BasicPublishAsync(
             exchange: stepDlx,                        // use step name as exchange and queue name
@@ -45,7 +45,7 @@ public class WorkerChannel : IWorkerChannel
             body: new ReadOnlyMemory<byte>(bytes));
     }
 
-    public async Task SendAsync(WorkerMessage message)
+    public async Task SendAsync(WorkerMessage message, Activity? activity)
     {
         var stepName = message.Step.Name;
 
@@ -59,7 +59,7 @@ public class WorkerChannel : IWorkerChannel
 
         // Create basic properties and inject trace context
         var properties = new BasicProperties();
-        InjectTraceContext(properties);
+        InjectTraceContext(properties, activity);
 
         await _rabbitMQInfrastructure.Channel.BasicPublishAsync(
             exchange: stepName,                        // use step name as exchange and queue name
@@ -69,26 +69,24 @@ public class WorkerChannel : IWorkerChannel
             body: new ReadOnlyMemory<byte>(bytes));
     }
 
-    private static void InjectTraceContext(BasicProperties properties)
+    private static void InjectTraceContext(BasicProperties properties, Activity? activity = null)
     {
-        var currentActivity = Activity.Current;
-        if (currentActivity != null)
-        {
-            properties.Headers ??= new Dictionary<string, object?>();
-            
-            // Inject W3C Trace Context
-            var traceParent = currentActivity.Id;
-            if (!string.IsNullOrEmpty(traceParent))
-            {
-                properties.Headers["traceparent"] = Encoding.UTF8.GetBytes(traceParent);
-            }
+        if (activity is null) return;
 
-            // Inject trace state if available
-            var traceState = currentActivity.TraceStateString;
-            if (!string.IsNullOrEmpty(traceState))
-            {
-                properties.Headers["tracestate"] = Encoding.UTF8.GetBytes(traceState);
-            }
+        properties.Headers ??= new Dictionary<string, object?>();
+
+        // Inject W3C Trace Context
+        var traceParent = activity.Id;
+        if (!string.IsNullOrEmpty(traceParent))
+        {
+            properties.Headers["traceparent"] = Encoding.UTF8.GetBytes(traceParent);
+        }
+
+        // Inject trace state if available
+        var traceState = activity.TraceStateString;
+        if (!string.IsNullOrEmpty(traceState))
+        {
+            properties.Headers["tracestate"] = Encoding.UTF8.GetBytes(traceState);
         }
     }
 }

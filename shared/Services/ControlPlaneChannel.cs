@@ -8,7 +8,7 @@ namespace shared.Services;
 
 public interface IControlPlaneChannel
 {
-    Task SendAsync(ControlPlaneMessage message);
+    Task SendAsync(ControlPlaneMessage message, Activity? activity = null);
 }
 
 public class ControlPlaneChannel : IControlPlaneChannel
@@ -24,7 +24,7 @@ public class ControlPlaneChannel : IControlPlaneChannel
         _jsonOptions = jsonOptions;
     }
 
-    public async Task SendAsync(ControlPlaneMessage message)
+    public async Task SendAsync(ControlPlaneMessage message, Activity? activity = null)
     {
         // Ensure the exchange, queue, and binding exist
         await _rabbitMQInfrastructure.DeclareExchangeAsync(ccpControlMessagesQueue, true);
@@ -33,7 +33,7 @@ public class ControlPlaneChannel : IControlPlaneChannel
 
         // Send the message
         var properties = new BasicProperties();
-        InjectTraceContext(properties);
+        InjectTraceContext(properties, activity);
 
         var bytes = JsonSerializer.SerializeToUtf8Bytes(message, _jsonOptions);
 
@@ -45,27 +45,24 @@ public class ControlPlaneChannel : IControlPlaneChannel
             body: new ReadOnlyMemory<byte>(bytes));
     }
 
-    private static void InjectTraceContext(BasicProperties properties)
+    private static void InjectTraceContext(BasicProperties properties, Activity? currentActivity = null)
     {
-        var currentActivity = Activity.Current;
-        if (currentActivity != null)
-        {
-            properties.Headers ??= new Dictionary<string, object?>();
-            
-            // Inject W3C Trace Context
-            var traceParent = currentActivity.Id;
-            if (!string.IsNullOrEmpty(traceParent))
-            {
-                properties.Headers["traceparent"] = Encoding.UTF8.GetBytes(traceParent);
-            }
+        if (currentActivity is null) return;
 
-            // Inject trace state if available
-            var traceState = currentActivity.TraceStateString;
-            if (!string.IsNullOrEmpty(traceState))
-            {
-                properties.Headers["tracestate"] = Encoding.UTF8.GetBytes(traceState);
-            }
+        properties.Headers ??= new Dictionary<string, object?>();
+
+        // Inject W3C Trace Context
+        var traceParent = currentActivity.Id;
+        if (!string.IsNullOrEmpty(traceParent))
+        {
+            properties.Headers["traceparent"] = Encoding.UTF8.GetBytes(traceParent);
+        }
+
+        // Inject trace state if available
+        var traceState = currentActivity.TraceStateString;
+        if (!string.IsNullOrEmpty(traceState))
+        {
+            properties.Headers["tracestate"] = Encoding.UTF8.GetBytes(traceState);
         }
     }
-
 }

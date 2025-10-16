@@ -45,7 +45,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
             {
                 try
                 {
-                    await MonitorPipelineHeartbeats();
+                    await MonitorPipelineHeartbeats(activity);
                 }
                 catch (OperationCanceledException)
                 {
@@ -63,7 +63,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
         }
     }
 
-    private async Task MonitorPipelineHeartbeats()
+    private async Task MonitorPipelineHeartbeats(Activity? activity = null)
     {
         _logger.LogDebug("Starting pipeline heartbeat check...");
 
@@ -127,7 +127,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
             // Handle stale pipelines
             if (stalePipelines.Count > 0)
             {
-                await HandleStalePipelines(stalePipelines);
+                await HandleStalePipelines(stalePipelines, activity);
             }
         }
         catch (Exception ex)
@@ -136,19 +136,19 @@ public class PipelineHeartbeatMonitorService : BackgroundService
         }
     }
 
-    private async Task HandleStalePipelines(List<Guid> stalePipelineIds)
+    private async Task HandleStalePipelines(List<Guid> stalePipelineIds, Activity? parentActivity = null)
     {
         _logger.LogWarning("Handling {Count} stale pipelines", stalePipelineIds.Count);
 
         foreach (var pipelineId in stalePipelineIds)
         {
             // run child activity for each pipeline
-            using var activity = ActivitySource.StartActivity("RestoreStalePipeline");
+            using var activity = ActivitySource.StartActivity("RestoreStalePipeline", ActivityKind.Internal, parentActivity!.Context);
             activity?.SetTag("pipeline.id", pipelineId.ToString());
 
             try
             {
-                await HandleStalePipeline(pipelineId);
+                await HandleStalePipeline(pipelineId, activity);
             }
             catch (Exception ex)
             {
@@ -158,7 +158,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
         }
     }
 
-    private async Task HandleStalePipeline(Guid pipelineId)
+    private async Task HandleStalePipeline(Guid pipelineId, Activity? activity = null)
     {
         // take step info and delete key atomicly, so no else ccp can take it and restart work twice
         var currentStep = await _pipelineStateService.LockCurrentStepAsync(pipelineId);
@@ -171,7 +171,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
         var workitem = await _pipelineStateService.GetWorkitemAsync(pipelineId);
         workitem!.RestoreAttempt += 1;  // increase attempt count for restores
 
-        Activity.Current?.SetTag("restore.attempt", workitem.RestoreAttempt.ToString());
+        activity?.SetTag("restore.attempt", workitem.RestoreAttempt.ToString());
 
         // remove stale pipeline from monitoring heartbeat
         await _pipelineStateService.DeleteStepAsync(pipelineId, currentStep!);
@@ -182,7 +182,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
             PipelineId = pipelineId,
             Workitem = workitem!,
             Step = currentStep!
-        });
+        }, activity);
 
         _logger.LogInformation("Restarted stale pipeline {PipelineId} at step {Step} with {RestoreAttempt} attempt", pipelineId, currentStep!.Name, workitem!.RestoreAttempt);
     }

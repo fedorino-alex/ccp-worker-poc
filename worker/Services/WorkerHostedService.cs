@@ -93,10 +93,10 @@ public class WorkerHostedService : BackgroundService
                     {
                         await channel.BasicAckAsync(messageResult!.DeliveryTag, false); // acknowledge the message
                         await ProcessWorkitem(workerMessage.Workitem, stoppingToken);
-                    });
+                    }, activity);
 
                     // If processing succeeded, dispatch to the next step
-                    await DispatchToNextStepAsync(workerMessage);
+                    await DispatchToNextStepAsync(workerMessage, activity);
                 }
                 catch (OperationCanceledException)
                 {
@@ -123,12 +123,12 @@ public class WorkerHostedService : BackgroundService
         }
     }
 
-    private async Task DispatchToNextStepAsync(WorkerMessage workerMessage)
+    private async Task DispatchToNextStepAsync(WorkerMessage workerMessage, Activity? parentActivity = null)
     {
         // If there are more steps, send to the next worker
         if (workerMessage.Step.Next is not null)
         {
-            using var activity = ActivitySource.StartActivity("DispatchToNextStep", ActivityKind.Producer);
+            using var activity = ActivitySource.StartActivity("DispatchToNextStep", ActivityKind.Producer, parentActivity!.Context);
             activity?.SetTag("next.step.name", workerMessage.Step.Next.Name);
             activity?.SetTag("pipeline.id", workerMessage.PipelineId.ToString());
             activity?.SetTag("workitem.id", workerMessage.Workitem.Id.ToString());
@@ -138,7 +138,7 @@ public class WorkerHostedService : BackgroundService
                 PipelineId = workerMessage.PipelineId,
                 Workitem = workerMessage.Workitem,
                 Step = workerMessage.Step.Next
-            });
+            }, activity);
 
             _logger.LogInformation("Workitem execution forwarded the next step {NextStep}", workerMessage.Step.Next.Name);
         }
@@ -179,9 +179,9 @@ public class WorkerHostedService : BackgroundService
         return (flowControl: true, value: (messageResult, workerMessage, parentContext));
     }
 
-    private async Task HandleProcessingException(WorkerMessage workerMessage, Exception ex)
+    private async Task HandleProcessingException(WorkerMessage workerMessage, Exception ex, Activity? activity = null)
     {
-        Activity.Current?.SetStatus(ActivityStatusCode.Error, ex.Message);
+        activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
         _logger.LogError(ex, "Error processing workitem");
 
         if (workerMessage.Workitem.RetryAttempt < 3)
@@ -192,7 +192,7 @@ public class WorkerHostedService : BackgroundService
                 PipelineId = workerMessage.PipelineId,
                 Workitem = workerMessage.Workitem,
                 Step = workerMessage.Step
-            });
+            }, activity);
 
             _logger.LogInformation("Re-queued workitem (RetryAttempt={RetryAttempt})", workerMessage.Workitem.RetryAttempt);
         }
@@ -204,7 +204,7 @@ public class WorkerHostedService : BackgroundService
         }
     }
 
-    private async Task WrapWithControlPlaneEvents(WorkerMessage workerMessage, Func<Task> func)
+    private async Task WrapWithControlPlaneEvents(WorkerMessage workerMessage, Func<Task> func, Activity? activity = null)
     {
         await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
         {
@@ -213,7 +213,7 @@ public class WorkerHostedService : BackgroundService
             Step = workerMessage.Step,
             Workitem = workerMessage.Workitem,
             WorkerId = _options.Name
-        });
+        }, activity);
 
         _logger.LogInformation("Processing of workitem has started");
 
@@ -233,7 +233,7 @@ public class WorkerHostedService : BackgroundService
                 Workitem = workerMessage.Workitem,
                 WorkerId = _options.Name,
                 ErrorMessage = ex.Message
-            });
+            }, activity);
 
             throw;
         }
@@ -248,7 +248,7 @@ public class WorkerHostedService : BackgroundService
                 Step = workerMessage.Step,
                 Workitem = workerMessage.Workitem,
                 WorkerId = _options.Name
-            });
+            }, activity);
         }
     }
 
