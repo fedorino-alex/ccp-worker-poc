@@ -7,6 +7,7 @@ using shared.Messages;
 using shared.Services;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using System.Diagnostics;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -35,21 +36,24 @@ builder.Services.AddOpenTelemetry()
             ["deployment.environment"] = builder.Environment.EnvironmentName
         }))
     .WithTracing(tracing => tracing
-        .AddRedisInstrumentation(configure =>
-        {
-            configure.SetVerboseDatabaseStatements = true;
-            configure.EnrichActivityWithTimingEvents = false;
-        })
+        // .AddRedisInstrumentation(configure =>
+        // {
+        //     configure.SetVerboseDatabaseStatements = false;
+        //     configure.EnrichActivityWithTimingEvents = false;
+        // })
         .AddAspNetCoreInstrumentation(options =>
         {
             options.RecordException = true;
             options.EnrichWithHttpRequest = (activity, request) =>
             {
+                activity.SetTag("http.request.method", request.Method);
+                activity.SetTag("http.request.url", request.Path);
                 activity.SetTag("http.request_content_length", request.ContentLength);
                 activity.SetTag("http.request_content_type", request.ContentType);
             };
             options.EnrichWithHttpResponse = (activity, response) =>
             {
+                activity.SetTag("http.response.status_code", response.StatusCode);
                 activity.SetTag("http.response_content_length", response.ContentLength);
                 activity.SetTag("http.response_content_type", response.ContentType);
             };
@@ -169,7 +173,7 @@ app.MapPost("/pipeline", async Task<CreatePipelineResponse> (
         PipelineId = pipelineId,
         Workitem = request.Workitem,
         Step = pipeline.Step
-    });
+    }, Activity.Current);
 
     return new CreatePipelineResponse(pipelineId);
 });

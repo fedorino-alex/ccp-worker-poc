@@ -49,7 +49,7 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
                 var body = ea.Body.ToArray();
 
                 var activityContext = ExtractTraceContext(ea.BasicProperties.Headers);
-                using var activity = ActivitySource.StartActivity("ControlPlaneMessagesListener",
+                using var activity = ActivitySource.StartActivity("Control Plane Message Processing",
                      ActivityKind.Consumer, activityContext);
 
                 var message = Encoding.UTF8.GetString(body);
@@ -115,6 +115,7 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
     private async Task ProcessWorkerMessage(ControlPlaneMessage workerMessage, Activity? activity = null)
     {
         _logger.LogInformation("Processing worker message");
+        activity?.SetTag("message.type", workerMessage.MessageType.ToString());
 
         switch (workerMessage.MessageType)
         {
@@ -141,7 +142,7 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
         _logger.LogInformation("Worker {WorkerId} started processing for pipeline {PipelineId}", 
             workerMessage.WorkerId, workerMessage.PipelineId);
 
-        await _pipelineStateService.PutStepAsync(workerMessage.PipelineId, workerMessage.Workitem, workerMessage.Step);
+        await _pipelineStateService.PutStepAsync(workerMessage.PipelineId, workerMessage.Workitem, workerMessage.Step, workerMessage.ActivityContext);
     }
 
     private async Task HandleFinishedMessage(ControlPlaneMessage workerMessage)

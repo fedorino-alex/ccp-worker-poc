@@ -1,18 +1,19 @@
 using StackExchange.Redis;
 using System.Text.Json;
 using shared.Models;
+using shared.Messages;
 
 namespace ccp.Services;
 
 public interface IPipelineStateService
 {
-    Task PutStepAsync(Guid pipelineId, WorkitemDto workitem, PipelineStepDto step);
+    Task PutStepAsync(Guid pipelineId, WorkitemDto workitem, PipelineStepDto step, WorkerActivityContext activityContext);
     Task PutHeartbeatAsync(Guid pipelineId, DateTime timestamp);
     Task DeleteStepAsync(Guid pipelineId, PipelineStepDto step);
 
     Task<Guid[]> GetHeartbeatPipelinesAsync(); // List all heartbeat pipelines
     Task<string?> GetHeartbeatAsync(Guid pipelineId); // Get heartbeat for a specific pipeline
-    Task<WorkitemDto?> GetWorkitemAsync(Guid pipelineId); // Get last known workitem for a specific pipeline
+    Task<(WorkitemDto?, WorkerActivityContext?)> GetWorkitemAsync(Guid pipelineId); // Get last known workitem for a specific pipeline
     Task<PipelineStepDto?> GetCurrentStepAsync(Guid pipelineId); // Get current step for a specific pipeline
     Task<PipelineStepDto?> LockCurrentStepAsync(Guid pipelineId); // Get and delete current step for a specific pipeline
 }
@@ -43,7 +44,7 @@ public class PipelineStateService : IPipelineStateService
         await _redis.StringSetAsync($"{pipelineKey}:heartbeat", timestamp.ToString("O"));
     }
 
-    public async Task PutStepAsync(Guid pipelineId, WorkitemDto workitem, PipelineStepDto step)
+    public async Task PutStepAsync(Guid pipelineId, WorkitemDto workitem, PipelineStepDto step, WorkerActivityContext activityContext)
     {
         var pipelineKey = $"pipeline:{pipelineId}:{workitem.RestoreAttempt}";
 
@@ -51,8 +52,9 @@ public class PipelineStateService : IPipelineStateService
         await _redis.HashSetAsync("pipelines:heartbeat", pipelineId.ToString(), workitem.RestoreAttempt);
 
         // store workitem and step
-        await _redis.StringSetAsync($"{pipelineKey}:workitem", JsonSerializer.Serialize(workitem, _jsonOptions));
+        await _redis.StringSetAsync($"{pipelineKey}:activity", JsonSerializer.Serialize(activityContext, _jsonOptions));
         await _redis.StringSetAsync($"{pipelineKey}:step", JsonSerializer.Serialize(step, _jsonOptions));
+        await _redis.StringSetAsync($"{pipelineKey}:workitem", JsonSerializer.Serialize(workitem, _jsonOptions));
     }
 
     public async Task DeleteStepAsync(Guid pipelineId, PipelineStepDto step)
@@ -68,16 +70,12 @@ public class PipelineStateService : IPipelineStateService
 
         // remove pipeline from hearbeat monitoring
         await _redis.HashDeleteAsync("pipelines:heartbeat", pipelineId.ToString());
-
-        if (step.IsFinal)
-        {
-            // if final step, remove workitem as well
-            await _redis.KeyDeleteAsync($"{pipelineKey}:workitem");
-        }
+        await _redis.KeyDeleteAsync($"{pipelineKey}:heartbeat");
 
         // remove current step and update workitem to be able restore it
+        await _redis.KeyDeleteAsync($"{pipelineKey}:activity");
         await _redis.KeyDeleteAsync($"{pipelineKey}:step");
-        await _redis.KeyDeleteAsync($"{pipelineKey}:heartbeat");
+        await _redis.KeyDeleteAsync($"{pipelineKey}:workitem");
 
         // so, after the final step - nothing remains of the pipeline in Redis
     }
@@ -106,7 +104,7 @@ public class PipelineStateService : IPipelineStateService
         return heartbeat.HasValue ? heartbeat.ToString() : null;
     }
 
-    public async Task<WorkitemDto?> GetWorkitemAsync(Guid pipelineId)
+    public async Task<(WorkitemDto?, WorkerActivityContext?)> GetWorkitemAsync(Guid pipelineId)
     {
         var attemptNumber = await _redis.HashGetAsync("pipelines:heartbeat", pipelineId.ToString());
         if (attemptNumber.IsNull)
@@ -117,10 +115,16 @@ public class PipelineStateService : IPipelineStateService
 
         var pipelineKey = $"pipeline:{pipelineId}:{attemptNumber}";
 
+        if (!await _redis.KeyExistsAsync($"{pipelineKey}:workitem"))
+        {
+            return (null, null);
+        }
+
         var workitemJson = await _redis.StringGetAsync($"{pipelineKey}:workitem");
-        return workitemJson.HasValue ?
-            JsonSerializer.Deserialize<WorkitemDto>(workitemJson, _jsonOptions) :
-            null;
+        var activityJson = await _redis.StringGetAsync($"{pipelineKey}:activity");
+
+        return (JsonSerializer.Deserialize<WorkitemDto>(workitemJson, _jsonOptions), 
+                JsonSerializer.Deserialize<WorkerActivityContext>(activityJson, _jsonOptions));
     }
 
     public async Task<PipelineStepDto?> GetCurrentStepAsync(Guid pipelineId)

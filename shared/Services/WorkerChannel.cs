@@ -8,7 +8,7 @@ namespace shared.Services;
 
 public interface IWorkerChannel
 {
-    Task SendAsync(WorkerMessage message, Activity? activity);
+    Task SendAsync(WorkerMessage message, Activity? activity, string? activityId = null);
     Task DeadLetterAsync(WorkerMessage message, Activity? activity);
 }
 
@@ -45,7 +45,7 @@ public class WorkerChannel : IWorkerChannel
             body: new ReadOnlyMemory<byte>(bytes));
     }
 
-    public async Task SendAsync(WorkerMessage message, Activity? activity)
+    public async Task SendAsync(WorkerMessage message, Activity? activity, string? activityId = null)
     {
         var stepName = message.Step.Name;
 
@@ -59,7 +59,7 @@ public class WorkerChannel : IWorkerChannel
 
         // Create basic properties and inject trace context
         var properties = new BasicProperties();
-        InjectTraceContext(properties, activity);
+        InjectTraceContext(properties, activity, activityId);
 
         await _rabbitMQInfrastructure.Channel.BasicPublishAsync(
             exchange: stepName,                        // use step name as exchange and queue name
@@ -69,21 +69,21 @@ public class WorkerChannel : IWorkerChannel
             body: new ReadOnlyMemory<byte>(bytes));
     }
 
-    private static void InjectTraceContext(BasicProperties properties, Activity? activity = null)
+    private static void InjectTraceContext(BasicProperties properties, Activity? activity = null, string? activityId = null)
     {
-        if (activity is null) return;
+        if (activity is null && string.IsNullOrEmpty(activityId)) return;
 
         properties.Headers ??= new Dictionary<string, object?>();
 
         // Inject W3C Trace Context
-        var traceParent = activity.Id;
+        var traceParent = activity?.Id ?? activityId;
         if (!string.IsNullOrEmpty(traceParent))
         {
             properties.Headers["traceparent"] = Encoding.UTF8.GetBytes(traceParent);
         }
 
         // Inject trace state if available
-        var traceState = activity.TraceStateString;
+        var traceState = activity?.TraceStateString ?? string.Empty;
         if (!string.IsNullOrEmpty(traceState))
         {
             properties.Headers["tracestate"] = Encoding.UTF8.GetBytes(traceState);

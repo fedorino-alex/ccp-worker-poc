@@ -63,7 +63,7 @@ public class WorkerHostedService : BackgroundService
                 }
 
                 // Start activity with parent context from message headers
-                using var activity = ActivitySource.StartActivity("ProcessWorkitem", ActivityKind.Consumer, parentContext);
+                using var activity = ActivitySource.StartActivity("Process workitem", ActivityKind.Consumer, parentContext);
                 activity?.SetTag("pipeline.id", workerMessage!.PipelineId.ToString());
                 activity?.SetTag("workitem.id", workerMessage!.Workitem.Id.ToString());
                 activity?.SetTag("step.name", workerMessage!.Step.Name);
@@ -84,7 +84,7 @@ public class WorkerHostedService : BackgroundService
                 using var heartbeatCts = new CancellationTokenSource();
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, heartbeatCts.Token);
 
-                _ = PublishHeartbeat(workerMessage!.PipelineId, linkedCts.Token); // start sending heartbeats
+                _ = PublishHeartbeat(workerMessage, activity, linkedCts.Token); // start sending heartbeats
 
                 try
                 {
@@ -104,7 +104,7 @@ public class WorkerHostedService : BackgroundService
                 }
                 catch (Exception ex)
                 {
-                    await HandleProcessingException(workerMessage, ex);
+                    await HandleProcessingException(workerMessage, ex, activity);
                 }
                 finally
                 {
@@ -128,8 +128,9 @@ public class WorkerHostedService : BackgroundService
         // If there are more steps, send to the next worker
         if (workerMessage.Step.Next is not null)
         {
-            using var activity = ActivitySource.StartActivity("DispatchToNextStep", ActivityKind.Producer, parentActivity!.Context);
-            activity?.SetTag("next.step.name", workerMessage.Step.Next.Name);
+            using var activity = ActivitySource.StartActivity("Dispatch to Next Step", ActivityKind.Producer, parentActivity!.Context);
+            activity?.SetTag("step.name.current", workerMessage.Step.Name);
+            activity?.SetTag("step.name.next", workerMessage.Step.Next?.Name ?? string.Empty);
             activity?.SetTag("pipeline.id", workerMessage.PipelineId.ToString());
             activity?.SetTag("workitem.id", workerMessage.Workitem.Id.ToString());
 
@@ -137,10 +138,8 @@ public class WorkerHostedService : BackgroundService
             {
                 PipelineId = workerMessage.PipelineId,
                 Workitem = workerMessage.Workitem,
-                Step = workerMessage.Step.Next
+                Step = workerMessage.Step.Next!
             }, activity);
-
-            _logger.LogInformation("Workitem execution forwarded the next step {NextStep}", workerMessage.Step.Next.Name);
         }
     }
 
@@ -212,14 +211,25 @@ public class WorkerHostedService : BackgroundService
             MessageType = ServiceMessageType.Started,
             Step = workerMessage.Step,
             Workitem = workerMessage.Workitem,
-            WorkerId = _options.Name
+            WorkerId = _options.Name,
+            ActivityContext = new WorkerActivityContext(activity!.Id!)
         }, activity);
-
-        _logger.LogInformation("Processing of workitem has started");
 
         try
         {
+            _logger.LogInformation("Processing of workitem has started");
             await func();
+            _logger.LogInformation("Processing of workitem has finished");
+
+            await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
+            {
+                PipelineId = workerMessage.PipelineId,
+                MessageType = ServiceMessageType.Finished,
+                Step = workerMessage.Step,
+                Workitem = workerMessage.Workitem,
+                WorkerId = _options.Name,
+            ActivityContext = new WorkerActivityContext(activity!.Id!)
+            }, activity);
         }
         catch (Exception ex)
         {
@@ -232,23 +242,11 @@ public class WorkerHostedService : BackgroundService
                 Step = workerMessage.Step,
                 Workitem = workerMessage.Workitem,
                 WorkerId = _options.Name,
-                ErrorMessage = ex.Message
+                ErrorMessage = ex.Message,
+            ActivityContext = new WorkerActivityContext(activity!.Id!)
             }, activity);
 
             throw;
-        }
-        finally
-        {
-            _logger.LogInformation("Processing of workitem has finished");
-
-            await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
-            {
-                PipelineId = workerMessage.PipelineId,
-                MessageType = ServiceMessageType.Finished,
-                Step = workerMessage.Step,
-                Workitem = workerMessage.Workitem,
-                WorkerId = _options.Name
-            }, activity);
         }
     }
 
@@ -278,18 +276,12 @@ public class WorkerHostedService : BackgroundService
         }
     }
 
-    private async Task PublishHeartbeat(Guid pipelineId, CancellationToken cancellationToken)
+    private async Task PublishHeartbeat(WorkerMessage workerMessage, Activity? activity, CancellationToken cancellationToken)
     {
+        using var heartbeatActivity = ActivitySource.StartActivity("Publishing heartbeat", ActivityKind.Internal, activity!.Context);
+
         while (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogDebug("Sending heartbeat");
-
-            await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
-            {
-                PipelineId = pipelineId,
-                MessageType = ServiceMessageType.Heartbeat
-            });
-
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken); // send heartbeat every 5 seconds
@@ -299,6 +291,19 @@ public class WorkerHostedService : BackgroundService
                 _logger.LogDebug("Stopping heartbeat");
                 break;
             }
+
+            _logger.LogDebug("Sending heartbeat");
+
+            await _controlPlaneChannel.SendAsync(new ControlPlaneMessage
+            {
+                Workitem = workerMessage.Workitem,
+                WorkerId = _options.Name,
+                Step = workerMessage.Step,
+                PipelineId = workerMessage.PipelineId,
+                Timestamp = DateTime.UtcNow,
+                MessageType = ServiceMessageType.Heartbeat,
+            ActivityContext = new WorkerActivityContext(activity!.Id!)
+            }, heartbeatActivity);
         }
     }
 

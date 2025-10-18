@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using shared.Models;
 
 namespace shared.Messages;
@@ -11,6 +12,7 @@ public record ControlPlaneMessage
     public required ServiceMessageType MessageType { get; set; }
     public string? ErrorMessage { get; set; }
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+    public WorkerActivityContext ActivityContext { get; set; }
 }
 
 public enum ServiceMessageType
@@ -19,3 +21,5 @@ public enum ServiceMessageType
     Heartbeat,      // Worker is alive and processing
     Finished        // Worker has completed processing the workitem (no matter success or failure)
 }
+
+public record WorkerActivityContext(string ActivityId);

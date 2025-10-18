@@ -41,7 +41,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            using (var activity = ActivitySource.StartActivity("MonitorPipelineHeartbeats"))
+            using (var activity = ActivitySource.StartActivity("Analyze pipeline heartbeats", ActivityKind.Internal))
             {
                 try
                 {
@@ -168,7 +168,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
             return;
         }
 
-        var workitem = await _pipelineStateService.GetWorkitemAsync(pipelineId);
+        var (workitem, workerActivity) = await _pipelineStateService.GetWorkitemAsync(pipelineId);
         workitem!.RestoreAttempt += 1;  // increase attempt count for restores
 
         activity?.SetTag("restore.attempt", workitem.RestoreAttempt.ToString());
@@ -182,7 +182,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
             PipelineId = pipelineId,
             Workitem = workitem!,
             Step = currentStep!
-        }, activity);
+        }, null, workerActivity?.ActivityId); // continue original activity id for tracing
 
         _logger.LogInformation("Restarted stale pipeline {PipelineId} at step {Step} with {RestoreAttempt} attempt", pipelineId, currentStep!.Name, workitem!.RestoreAttempt);
     }
