@@ -56,7 +56,9 @@ processors:
           - set(severity_text, "ERROR") where attributes["level"] == "Error"
           - set(severity_text, "FATAL") where attributes["level"] == "Critical"
 
-          - set(attributes["service_name"], attributes["fluent.tag"]) where attributes["fluent.tag"] != nil and Len(attributes["fluent.tag"]) > 0
+          # Extract service name from fluent.tag by splitting on '-' and taking first part
+          # For "ccp-1" -> "ccp", "validation-2" -> "validation"
+          - set(attributes["service_name"], Split(attributes["fluent.tag"], "-")[0]) where attributes["fluent.tag"] != nil and Len(attributes["fluent.tag"]) > 0
 
             # Set the body to the actual message for readability
           - set(body, attributes["message"]) where attributes["message"] != nil
@@ -65,12 +67,12 @@ processors:
   attributes/logs:
     actions:
       # Set service name from extracted service_name (e.g., "ccp", "worker")
-      # - key: service.name
-      #   action: upsert
-      #   from_attribute: service_name
-      # - key: service.instance.id
-      #   action: upsert
-      #   from_attribute: fluent.tag
+      - key: service.name
+        action: upsert
+        from_attribute: service_name
+      - key: service.instance.id
+        action: upsert
+        from_attribute: fluent.tag
       
       # Add more Loki labels for better filtering (keep cardinality low)
       - key: level
@@ -82,9 +84,9 @@ processors:
       # - key: instance
       #   action: upsert
       #   from_attribute: fluent.tag
-      - key: worker_name
-        action: upsert
-        from_attribute: WorkerName
+      # - key: worker_name
+      #   action: upsert
+      #   from_attribute: WorkerName
         
       # Clean up temporary attributes
       - key: fluent.tag

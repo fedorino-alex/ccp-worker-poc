@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Pipelines;
 using System.Text.Json;
 using ccp.Models;
 using shared.Messages;
@@ -55,7 +56,16 @@ public class PipelineHeartbeatMonitorService : BackgroundService
                 catch (Exception ex)
                 {
                     activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-                    _logger.LogError(ex, "Error in Pipeline Heartbeat Monitor Service");
+
+                    using (_logger.BeginScope(new Dictionary<string, object?>
+                    {
+                        ["Exception.Message"] = ex.Message,
+                        ["Exception.StackTrace"] = ex.StackTrace,
+                        ["Exception.Type"] = ex.GetType().FullName
+                    }))
+                    {
+                        _logger.LogError(ex, "Error in Pipeline Heartbeat Monitor Service");
+                    }
                 }
             }
 
@@ -132,7 +142,15 @@ public class PipelineHeartbeatMonitorService : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error monitoring pipeline heartbeats");
+            using (_logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["Exception.Message"] = ex.Message,
+                ["Exception.StackTrace"] = ex.StackTrace,
+                ["Exception.Type"] = ex.GetType().FullName
+            }))
+            {
+                _logger.LogError(ex, "Error monitoring pipeline heartbeats");
+            }
         }
     }
 
@@ -143,7 +161,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
         foreach (var pipelineId in stalePipelineIds)
         {
             // run child activity for each pipeline
-            using var activity = ActivitySource.StartActivity("RestoreStalePipeline", ActivityKind.Internal, parentActivity!.Context);
+            using var activity = ActivitySource.StartActivity($"Restore pipeline {pipelineId}", ActivityKind.Internal, parentActivity!.Context);
             activity?.SetTag("pipeline.id", pipelineId.ToString());
 
             try
@@ -153,7 +171,15 @@ public class PipelineHeartbeatMonitorService : BackgroundService
             catch (Exception ex)
             {
                 activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-                _logger.LogError(ex, "Error handling stale pipeline {PipelineId}", pipelineId);
+                using (_logger.BeginScope(new Dictionary<string, object?>
+                {
+                    ["Exception.Message"] = ex.Message,
+                    ["Exception.StackTrace"] = ex.StackTrace,
+                    ["Exception.Type"] = ex.GetType().FullName
+                }))
+                {
+                    _logger.LogError(ex, "Error handling stale pipeline {PipelineId}", pipelineId);
+                }
             }
         }
     }
@@ -161,6 +187,8 @@ public class PipelineHeartbeatMonitorService : BackgroundService
     private async Task HandleStalePipeline(Guid pipelineId, Activity? activity = null)
     {
         // take step info and delete key atomicly, so no else ccp can take it and restart work twice
+        _logger.LogDebug("Locking current step for stale pipeline {PipelineId}", pipelineId);
+
         var currentStep = await _pipelineStateService.LockCurrentStepAsync(pipelineId);
         if (currentStep is null)
         {
@@ -168,13 +196,17 @@ public class PipelineHeartbeatMonitorService : BackgroundService
             return;
         }
 
-        var (workitem, workerActivity) = await _pipelineStateService.GetWorkitemAsync(pipelineId);
-        workitem!.RestoreAttempt += 1;  // increase attempt count for restores
+        _logger.LogDebug("Locked current step for stale pipeline {PipelineId}", pipelineId);
 
+        var (workitem, workerActivity) = await _pipelineStateService.GetWorkitemAsync(pipelineId);
+        _logger.LogDebug("Retrieved workitem for stale pipeline {PipelineId}", pipelineId);
+
+        workitem!.RestoreAttempt += 1;  // increase attempt count for restores
         activity?.SetTag("restore.attempt", workitem.RestoreAttempt.ToString());
 
         // remove stale pipeline from monitoring heartbeat
         await _pipelineStateService.DeleteStepAsync(pipelineId, currentStep!);
+        _logger.LogDebug("Deleted step for stale pipeline {PipelineId}", pipelineId);
 
         // re-queue workitem to worker channel
         await _workerChannel.SendAsync(new WorkerMessage
@@ -182,7 +214,7 @@ public class PipelineHeartbeatMonitorService : BackgroundService
             PipelineId = pipelineId,
             Workitem = workitem!,
             Step = currentStep!
-        }, null, workerActivity?.ActivityId); // continue original activity id for tracing
+        }, workerActivity?.ActivityId, workerActivity?.TraceState); // continue original activity id for tracing
 
         _logger.LogInformation("Restarted stale pipeline {PipelineId} at step {Step} with {RestoreAttempt} attempt", pipelineId, currentStep!.Name, workitem!.RestoreAttempt);
     }

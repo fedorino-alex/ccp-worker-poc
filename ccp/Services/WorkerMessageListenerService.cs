@@ -83,7 +83,16 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing worker message");
+                using (_logger.BeginScope(new Dictionary<string, object?>
+                {
+                    ["Exception.Message"] = ex.Message,
+                    ["Exception.StackTrace"] = ex.StackTrace,
+                    ["Exception.Type"] = ex.GetType().FullName
+                }))
+                {
+                    _logger.LogError(ex, "Error processing worker message");
+                }
+
                 await channel.BasicNackAsync(ea.DeliveryTag, false, false);
             }
         };
@@ -107,7 +116,16 @@ public class ControlPlaneMessagesListener : BackgroundService, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error in Worker Message Listener Service");
+            using (_logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["Exception.Message"] = ex.Message,
+                ["Exception.StackTrace"] = ex.StackTrace,
+                ["Exception.Type"] = ex.GetType().FullName
+            }))
+            {
+                _logger.LogError(ex, "Error in Worker Message Listener Service");
+            }
+
             throw;
         }
     }

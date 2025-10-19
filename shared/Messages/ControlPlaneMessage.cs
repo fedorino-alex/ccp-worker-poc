@@ -22,4 +22,4 @@ public enum ServiceMessageType
     Finished        // Worker has completed processing the workitem (no matter success or failure)
 }
 
-public record WorkerActivityContext(string ActivityId);
+public record WorkerActivityContext(string ActivityId, string? TraceState);

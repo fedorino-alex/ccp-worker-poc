@@ -38,7 +38,7 @@ builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing
         // .AddRedisInstrumentation(configure =>
         // {
-        //     configure.SetVerboseDatabaseStatements = false;
+        //     configure.SetVerboseDatabaseStatements = true;
         //     configure.EnrichActivityWithTimingEvents = false;
         // })
         .AddAspNetCoreInstrumentation(options =>
@@ -66,8 +66,6 @@ builder.Services.AddOpenTelemetry()
 
 // Configure Redis connection
 var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "redis:6379";
-Console.WriteLine($"Redis Connection String from config: '{redisConnectionString}'");
-Console.WriteLine($"Environment variable ConnectionString__Redis: '{Environment.GetEnvironmentVariable("ConnectionString__Redis")}'");
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(provider =>
     ConnectionMultiplexer.Connect(redisConnectionString));
@@ -124,7 +122,7 @@ app.MapGet("/pipeline", async Task<string[]> (IPipelineStateService pipelineStat
     var pipelineIds = await pipelineStateService.GetHeartbeatPipelinesAsync();
     foreach (var id in pipelineIds)
     {
-        var workitem = await pipelineStateService.GetWorkitemAsync(id);
+        var (workitem, _) = await pipelineStateService.GetWorkitemAsync(id);
         var step = await pipelineStateService.GetCurrentStepAsync(id);
 
         results.Add($"{workitem!.Name}, ({id}): {step!.Name}");

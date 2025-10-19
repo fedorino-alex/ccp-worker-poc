@@ -8,7 +8,8 @@ namespace shared.Services;
 
 public interface IWorkerChannel
 {
-    Task SendAsync(WorkerMessage message, Activity? activity, string? activityId = null);
+    Task SendAsync(WorkerMessage message, Activity? activity);
+    Task SendAsync(WorkerMessage message, string? activityId, string? traceState = null);
     Task DeadLetterAsync(WorkerMessage message, Activity? activity);
 }
 
@@ -35,7 +36,7 @@ public class WorkerChannel : IWorkerChannel
         
         // Create basic properties and inject trace context
         var properties = new BasicProperties();
-        InjectTraceContext(properties, activity);
+        InjectTraceContext(properties, activity?.Id, activity?.TraceStateString);
 
         await _rabbitMQInfrastructure.Channel.BasicPublishAsync(
             exchange: stepDlx,                        // use step name as exchange and queue name
@@ -45,7 +46,10 @@ public class WorkerChannel : IWorkerChannel
             body: new ReadOnlyMemory<byte>(bytes));
     }
 
-    public async Task SendAsync(WorkerMessage message, Activity? activity, string? activityId = null)
+    public Task SendAsync(WorkerMessage message, Activity? activity) => 
+        SendAsync(message, activity?.Id, activity?.TraceStateString);
+
+    public async Task SendAsync(WorkerMessage message, string? activityId, string? traceState = null)
     {
         var stepName = message.Step.Name;
 
@@ -59,7 +63,7 @@ public class WorkerChannel : IWorkerChannel
 
         // Create basic properties and inject trace context
         var properties = new BasicProperties();
-        InjectTraceContext(properties, activity, activityId);
+        InjectTraceContext(properties, activityId, traceState);
 
         await _rabbitMQInfrastructure.Channel.BasicPublishAsync(
             exchange: stepName,                        // use step name as exchange and queue name
@@ -69,21 +73,16 @@ public class WorkerChannel : IWorkerChannel
             body: new ReadOnlyMemory<byte>(bytes));
     }
 
-    private static void InjectTraceContext(BasicProperties properties, Activity? activity = null, string? activityId = null)
+    private static void InjectTraceContext(BasicProperties properties, string? activityId, string? traceState = null)
     {
-        if (activity is null && string.IsNullOrEmpty(activityId)) return;
+        if (string.IsNullOrEmpty(activityId)) return;
 
         properties.Headers ??= new Dictionary<string, object?>();
 
         // Inject W3C Trace Context
-        var traceParent = activity?.Id ?? activityId;
-        if (!string.IsNullOrEmpty(traceParent))
-        {
-            properties.Headers["traceparent"] = Encoding.UTF8.GetBytes(traceParent);
-        }
+        properties.Headers["traceparent"] = Encoding.UTF8.GetBytes(activityId);
 
         // Inject trace state if available
-        var traceState = activity?.TraceStateString ?? string.Empty;
         if (!string.IsNullOrEmpty(traceState))
         {
             properties.Headers["tracestate"] = Encoding.UTF8.GetBytes(traceState);

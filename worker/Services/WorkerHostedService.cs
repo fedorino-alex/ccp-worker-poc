@@ -63,7 +63,7 @@ public class WorkerHostedService : BackgroundService
                 }
 
                 // Start activity with parent context from message headers
-                using var activity = ActivitySource.StartActivity("Process workitem", ActivityKind.Consumer, parentContext);
+                using var activity = ActivitySource.StartActivity($"Process {workerMessage!.Step.Name} step", ActivityKind.Consumer, parentContext);
                 activity?.SetTag("pipeline.id", workerMessage!.PipelineId.ToString());
                 activity?.SetTag("workitem.id", workerMessage!.Workitem.Id.ToString());
                 activity?.SetTag("step.name", workerMessage!.Step.Name);
@@ -84,15 +84,15 @@ public class WorkerHostedService : BackgroundService
                 using var heartbeatCts = new CancellationTokenSource();
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, heartbeatCts.Token);
 
-                _ = PublishHeartbeat(workerMessage, activity, linkedCts.Token); // start sending heartbeats
-
                 try
                 {
                     // Process the message
                     await WrapWithControlPlaneEvents(workerMessage, async () =>
                     {
                         await channel.BasicAckAsync(messageResult!.DeliveryTag, false); // acknowledge the message
-                        await ProcessWorkitem(workerMessage.Workitem, stoppingToken);
+
+                        _ = PublishHeartbeat(workerMessage, activity, linkedCts.Token); // start sending heartbeats
+                        await ProcessWorkitem(workerMessage.Workitem);
                     }, activity);
 
                     // If processing succeeded, dispatch to the next step
@@ -118,29 +118,42 @@ public class WorkerHostedService : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error in Worker hosted service '{WorkerName}'", _options.Name);
+            using (_logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["Exception.Message"] = ex.Message,
+                ["Exception.StackTrace"] = ex.StackTrace,
+                ["Exception.Type"] = ex.GetType().FullName
+            }))
+            {
+                _logger.LogError(ex, "Error in Worker hosted service '{WorkerName}'", _options.Name);
+            }
+
             throw;
         }
     }
 
-    private async Task DispatchToNextStepAsync(WorkerMessage workerMessage, Activity? parentActivity = null)
+    private async Task DispatchToNextStepAsync(WorkerMessage workerMessage, Activity? parentActivity)
     {
         // If there are more steps, send to the next worker
-        if (workerMessage.Step.Next is not null)
+        if (workerMessage.Step.Next is null)
         {
-            using var activity = ActivitySource.StartActivity("Dispatch to Next Step", ActivityKind.Producer, parentActivity!.Context);
-            activity?.SetTag("step.name.current", workerMessage.Step.Name);
-            activity?.SetTag("step.name.next", workerMessage.Step.Next?.Name ?? string.Empty);
-            activity?.SetTag("pipeline.id", workerMessage.PipelineId.ToString());
-            activity?.SetTag("workitem.id", workerMessage.Workitem.Id.ToString());
-
-            await _workerChannel.SendAsync(new WorkerMessage
-            {
-                PipelineId = workerMessage.PipelineId,
-                Workitem = workerMessage.Workitem,
-                Step = workerMessage.Step.Next!
-            }, activity);
+            _logger.LogInformation("Workitem has completed all steps in the pipeline");
+            return;
         }
+
+        using var activity = ActivitySource.StartActivity("Dispatch to Next Step", ActivityKind.Producer, parentActivity!.Context);
+
+        activity?.SetTag("step.name.current", workerMessage.Step.Name);
+        activity?.SetTag("step.name.next", workerMessage.Step.Next?.Name ?? string.Empty);
+        activity?.SetTag("pipeline.id", workerMessage.PipelineId.ToString());
+        activity?.SetTag("workitem.id", workerMessage.Workitem.Id.ToString());
+
+        await _workerChannel.SendAsync(new WorkerMessage
+        {
+            PipelineId = workerMessage.PipelineId,
+            Workitem = workerMessage.Workitem,
+            Step = workerMessage.Step.Next!
+        }, activity);
     }
 
     private async Task<(bool flowControl, (BasicGetResult? messageResult, WorkerMessage? workerMessage, ActivityContext parentContext) value)> ConsumeWorkitem(IChannel channel, CancellationToken stoppingToken)
@@ -170,7 +183,16 @@ public class WorkerHostedService : BackgroundService
         }
         catch (JsonException ex)
         {
-            _logger.LogError(ex, "JSON deserialization error for message: {Message}", Encoding.UTF8.GetString(messageResult.Body.ToArray()));
+            using (_logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["Exception.Message"] = ex.Message,
+                ["Exception.StackTrace"] = ex.StackTrace,
+                ["Exception.Type"] = ex.GetType().FullName
+            }))
+            {
+                _logger.LogError(ex, "JSON deserialization error for message: {Message}", Encoding.UTF8.GetString(messageResult.Body.ToArray()));
+            }
+
             await channel.BasicNackAsync(messageResult.DeliveryTag, false, false); // reject the message
             return (flowControl: false, value: default);
         }
@@ -181,9 +203,17 @@ public class WorkerHostedService : BackgroundService
     private async Task HandleProcessingException(WorkerMessage workerMessage, Exception ex, Activity? activity = null)
     {
         activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-        _logger.LogError(ex, "Error processing workitem");
+        using (_logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["Exception.Message"] = ex.Message,
+            ["Exception.StackTrace"] = ex.StackTrace,
+            ["Exception.Type"] = ex.GetType().FullName
+        }))
+        {
+            _logger.LogError(ex, "Error processing workitem");
+        }
 
-        if (workerMessage.Workitem.RetryAttempt < 3)
+        if (workerMessage.Workitem.RetryAttempt < 10)
         {
             workerMessage.Workitem.RetryAttempt += 1;           // increase retry attempt
             await _workerChannel.SendAsync(new WorkerMessage
@@ -197,7 +227,7 @@ public class WorkerHostedService : BackgroundService
         }
         else
         {
-            _logger.LogWarning("Workitem reached max retry attempts (3) and will not be re-queued");
+            _logger.LogWarning("Workitem reached max retry attempts (10) and will not be re-queued");
 
             // TODO: Stop workitem execution, complete pipeline with error
         }
@@ -212,7 +242,7 @@ public class WorkerHostedService : BackgroundService
             Step = workerMessage.Step,
             Workitem = workerMessage.Workitem,
             WorkerId = _options.Name,
-            ActivityContext = new WorkerActivityContext(activity!.Id!)
+            ActivityContext = new WorkerActivityContext(activity!.Id!, activity!.TraceStateString)
         }, activity);
 
         try
@@ -228,7 +258,7 @@ public class WorkerHostedService : BackgroundService
                 Step = workerMessage.Step,
                 Workitem = workerMessage.Workitem,
                 WorkerId = _options.Name,
-            ActivityContext = new WorkerActivityContext(activity!.Id!)
+                ActivityContext = new WorkerActivityContext(activity!.Id!, activity!.TraceStateString)
             }, activity);
         }
         catch (Exception ex)
@@ -243,14 +273,14 @@ public class WorkerHostedService : BackgroundService
                 Workitem = workerMessage.Workitem,
                 WorkerId = _options.Name,
                 ErrorMessage = ex.Message,
-            ActivityContext = new WorkerActivityContext(activity!.Id!)
+                ActivityContext = new WorkerActivityContext(activity!.Id!, activity!.TraceStateString)
             }, activity);
 
             throw;
         }
     }
 
-    private async Task ProcessWorkitem(WorkitemDto workitem, CancellationToken stoppingToken)
+    private async Task ProcessWorkitem(WorkitemDto workitem)
     {
         // Simulate workitem processing
 
@@ -260,14 +290,14 @@ public class WorkerHostedService : BackgroundService
         var begin = DateTime.UtcNow;
         var end = begin + processingTime;
 
-        while (DateTime.UtcNow < end && !stoppingToken.IsCancellationRequested)
+        while (DateTime.UtcNow < end)
         {
-            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); // simulate doing some work
+            await Task.Delay(TimeSpan.FromSeconds(5)); // simulate doing some work
 
             var elapsed = DateTime.UtcNow - begin;
             var progress = Math.Min(100, (int)(elapsed.TotalSeconds / processingTime.TotalSeconds * 100));
 
-            if (elapsed.TotalSeconds > 150)
+            if (elapsed.TotalSeconds > 70)
             {
                 throw new Exception("Workitem has simulated processing error.");
             }
@@ -278,8 +308,6 @@ public class WorkerHostedService : BackgroundService
 
     private async Task PublishHeartbeat(WorkerMessage workerMessage, Activity? activity, CancellationToken cancellationToken)
     {
-        using var heartbeatActivity = ActivitySource.StartActivity("Publishing heartbeat", ActivityKind.Internal, activity!.Context);
-
         while (!cancellationToken.IsCancellationRequested)
         {
             try
@@ -302,8 +330,8 @@ public class WorkerHostedService : BackgroundService
                 PipelineId = workerMessage.PipelineId,
                 Timestamp = DateTime.UtcNow,
                 MessageType = ServiceMessageType.Heartbeat,
-            ActivityContext = new WorkerActivityContext(activity!.Id!)
-            }, heartbeatActivity);
+                ActivityContext = new WorkerActivityContext(activity!.Id!, activity!.TraceStateString)
+            }, activity);
         }
     }
 
